@@ -22,6 +22,7 @@ describe("tug init", () => {
     expect(files.map((file) => file.path)).toEqual([".github/workflows/tug.yml", "tug.json"])
     expect(workflow).toContain("      - run: pnpm install --frozen-lockfile\n      - run: pnpm run typecheck\n      - run: pnpm run test\n")
     expect(workflow).not.toContain("build")
+    expect(workflow).toContain("  test:\n    name: test / typecheck, test\n")
     expect(workflow).toContain(`    runs-on: ["self-hosted","tug"]`)
     expect(workflow).toContain("    needs: [test, review]")
     expect(workflow).toContain("      review: ${{ needs.review.outputs.review }}")
