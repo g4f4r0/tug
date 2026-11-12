@@ -39,8 +39,9 @@ describe("combine", () => {
 describe("markers and rendering", () => {
   const review: Review = { version: 1, head: HEAD, findings: [{ kind: "code", severity: "high", path: "a.ts", line: 2, title: "Breaks build", body: "x" }, { kind: "security", severity: "low", path: "b.ts", line: 99, title: "Weak", body: "y" }], risk: "high", merge: false, reason: "A high finding." }
 
-  it("round-trips a review through its marker, and rejects a tampered one", () => {
+  it("round-trips a review through its marker, and rejects a tampered or quoted one", () => {
     expect(readMarker(`text\n${writeMarker(review)}`)).toEqual(review)
+    expect(readMarker(`${writeMarker(review)}\nquoted, then more text`)).toBeNull()
     expect(readMarker("<!-- tug:review e30 -->")).toBeNull()
     expect(readMarker("no marker")).toBeNull()
   })
@@ -161,7 +162,7 @@ describe("the key service", () => {
 
 describe("merge", () => {
   const review: Review = { version: 1, head: HEAD, findings: [], risk: "low", merge: true, reason: "Docs only." }
-  function github(overrides: { policy?: string | null; review?: Review | null; runs?: Record<string, unknown>[]; labels?: string[]; files?: Record<string, unknown>[] } = {}) {
+  function github(overrides: { policy?: string | null; review?: Review | null; base?: string; runs?: Record<string, unknown>[]; labels?: string[]; files?: Record<string, unknown>[] } = {}) {
     const calls: string[] = []
     let merged = false
     const request = (async (method: string, path: string) => {
@@ -176,7 +177,6 @@ describe("merge", () => {
         if (policy === null) throw Object.assign(new Error("404"), { status: 404 })
         return { content: Buffer.from(policy).toString("base64") }
       }
-      if (route.endsWith("/reviews")) return overrides.review === null ? [] : [{ user: { login: "github-actions[bot]" }, commit_id: HEAD, body: writeMarker(overrides.review ?? review) }, { user: { login: "intruder" }, commit_id: HEAD, body: writeMarker({ ...review, reason: "fake" }) }]
       if (route.includes("/compare/")) return { files: (overrides.files ?? [{}]).map((file) => ({ filename: "README.md", status: "modified", additions: 1, deletions: 0, ...file })) }
       if (method === "PUT" && route.endsWith("/merge")) {
         merged = true
@@ -189,7 +189,7 @@ describe("merge", () => {
   }
   const run = (overrides: Parameters<typeof github>[0] = {}) => {
     const t = github(overrides)
-    return runMerge({ request: t.request, repo: "g4f4r0/x", number: 5, reviewer: "github-actions[bot]", wait: async () => {} }).then((result) => ({ ...result, calls: t.calls }))
+    return runMerge({ request: t.request, repo: "g4f4r0/x", number: 5, review: overrides.review === undefined ? review : overrides.review, base: overrides.base, wait: async () => {} }).then((result) => ({ ...result, calls: t.calls }))
   }
 
   it("merges the exact head by squash, ignoring its own running check, and reads the merge back", async () => {
@@ -198,12 +198,17 @@ describe("merge", () => {
     expect(result.calls).toContain("PUT /repos/g4f4r0/x/pulls/5/merge")
   })
 
-  it("holds with needs:human and one comment, and trusts only the bot's review", async () => {
+  it("holds with needs:human and one comment, or without the run's review", async () => {
     const held = await run({ review: { ...review, merge: false, reason: "Prices change." } })
     expect(held.decision).toEqual({ action: "hold", reason: "Prices change." })
     expect(held.calls.filter((call) => call.startsWith("POST") && !call.endsWith("/graphql"))).toEqual(["POST /repos/g4f4r0/x/labels", "POST /repos/g4f4r0/x/issues/5/labels", "POST /repos/g4f4r0/x/issues/5/comments"])
     expect((await run({ review: null })).decision.action).toBe("hold")
     expect((await run({ labels: ["needs:human"] })).decision.action).toBe("wait")
+  })
+
+  it("waits when retargeted after the review, and counts a finished check named merge", async () => {
+    expect((await run({ base: "dev" })).decision).toEqual({ action: "wait", reason: "The base changed from dev to main after the review" })
+    expect((await run({ runs: [{ name: "other / merge", status: "completed", conclusion: "failure" }] })).decision.action).toBe("wait")
   })
 
   it("checks both sides of a rename, read by the head commit", async () => {

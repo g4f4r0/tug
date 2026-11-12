@@ -89,11 +89,13 @@ jobs:
   merge:
     needs: [test, review]
     uses: hellogafaro/tug/.github/workflows/merge.yml@v1
+    with:
+      review: ${{ needs.review.outputs.review }}
 ```
 
-1. Triggers: `pull_request` with `opened`, `synchronize`, `reopened`, `ready_for_review`, `labeled` and `unlabeled`. Use `concurrency` per PR with `cancel-in-progress`. Skip drafts.
+1. Triggers: `pull_request` with `opened`, `synchronize`, `reopened` and `ready_for_review`. Label changes start nothing: a person who removes `merge:hold` or `needs:human` merges by hand. Use `concurrency` per PR with `cancel-in-progress`. Skip drafts.
 2. `review` runs alongside the tests. It runs the code and security kinds in parallel and posts one COMMENT review with inline comments. It sets `risk:low|medium|high` and fails on a new high finding; a critical or high security finding counts as high. On a re-review it skips findings already raised and never lowers the risk.
-3. `merge` runs only after `test` and `review` pass. It reads `tug.json`, requires `tug pr state` to be READY and the filters to pass, and requires the review to have said merge. It never merges a PR that changes `.github/`: that PR's own workflows run with a token that posts as the same bot, so they could forge the review. Then it runs `gh pr merge --squash --match-head-commit <sha>` and reads the PR back. Otherwise it adds `needs:human` and a comment.
+3. `merge` runs only after `test` and `review` pass. It reads `tug.json`, requires `tug pr state` to be READY and the filters to pass, and requires the review of the same run, passed as `review.yml`'s output, to have said merge. It never reads the review from the PR, because any workflow's token posts as the same bot. It never merges a PR that changes `.github/`: that PR's own workflows run with a token that posts as the same bot, so they could forge the review. Then it runs `gh pr merge --squash --match-head-commit <sha>` and reads the PR back. Otherwise it adds `needs:human` and a comment.
 4. CI belongs to the forge. Tug doesn't run CI commands itself. `tug init` writes a plain CI workflow when a repo has none: `npm ci`, `typecheck`, `lint`, `test` from `package.json`, or `shopify theme check`. It also adds the Tug jobs, and opens all of this as a PR.
 5. Labels: `risk:*`, `needs:human`, and `merge:hold` (set by a person). There are no `review:*` or `security:*` labels; the checks show the result. Gates read checks, never labels.
 6. Known limits:

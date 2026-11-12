@@ -5,7 +5,8 @@ import { ask, type ModelSettings } from "./engine.ts"
 import { fileAt, pullFiles, pullInfo, pullReviews, setLabel, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
 
 export const KINDS = ["code", "security"] as const
-const MARKER = /<!-- tug:review ([A-Za-z0-9_-]+) -->/u
+/** Only a marker that ends the body counts, so one quoted in a finding can't stand in for it. */
+const MARKER = /<!-- tug:review ([A-Za-z0-9_-]+) -->\s*$/u
 /** Characters of patches sent to the model; past this the review can't see the whole change, so it never says merge. */
 const MAX_DIFF = 400_000
 const MAX_INLINE = 20
@@ -141,8 +142,6 @@ const labelsOf = async (request: Request, repo: string, number: number) => ((awa
 
 export interface ReviewResult {
   review: Review
-  /** Whether this run posted it; false when the head already had one. */
-  posted: boolean
   /** A new critical or high finding: the check fails. */
   failed: boolean
 }
@@ -152,12 +151,6 @@ export async function runReview(input: { request: Request; repo: string; number:
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
   const done = await tugReviews(request, repo, number, input.reviewer)
-  const already = done.find((review) => review.head === pull.head)
-  if (already) {
-    await setLabel(request, repo, number, `risk:${already.risk}`, await labelsOf(request, repo, number), RISK_COLORS[already.risk])
-    return { review: already, posted: false, failed: already.findings.some((finding) => rank(finding.severity) <= rank("high")) }
-  }
-
   const earlier = done.at(-1) ?? null
   const earlierFindings = done.flatMap((review) => review.findings)
   // The policy comes from the base branch, so a pull request can't loosen its own review.
@@ -176,5 +169,5 @@ export async function runReview(input: { request: Request; repo: string; number:
   const { body, comments } = render(review, files, earlier?.head ?? null)
   await request("POST", `/repos/${repo}/pulls/${number}/reviews`, { body: { commit_id: pull.head, event: "COMMENT", body, comments } })
   await setLabel(request, repo, number, `risk:${review.risk}`, await labelsOf(request, repo, number), RISK_COLORS[review.risk])
-  return { review, posted: true, failed: review.findings.some((finding) => rank(finding.severity) <= rank("high")) }
+  return { review, failed: review.findings.some((finding) => rank(finding.severity) <= rank("high")) }
 }

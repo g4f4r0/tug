@@ -1,4 +1,6 @@
+import { appendFileSync } from "node:fs"
 import { parseArgs } from "node:util"
+import { Review } from "./contracts.ts"
 import { describeState } from "./core/state.ts"
 import { modelSettings } from "./engine.ts"
 import { client, pullState, token } from "./forge/github.ts"
@@ -19,7 +21,7 @@ const USAGE = `Usage:
   tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--settle <s>] [--until-merged] [--require <check>]... [--ignore <check>]...
 
 tug review posts one review of the head (code and security) and its risk:* label, and fails on a new high finding.
-tug merge merges the head when tug.json allows it, or holds it with needs:human.
+tug merge merges the head when tug.json allows it, or holds it with needs:human. It reads the review from TUG_REVIEW.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
 tug pr state prints the pull request's state as JSON: MERGED, CLOSED, HELD, CONFLICTS, CHECKS, THREADS, PENDING or READY.
 tug pr watch stays quiet while it is PENDING, then prints the state once and exits:
@@ -131,10 +133,12 @@ async function job(command: "review" | "merge", ref: string, io: { out: (text: s
     if (command === "review") {
       const result = await runReview({ request, ...target, settings: modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS })
       io.out(`${JSON.stringify(result.review, null, 2)}\n`)
-      io.err(`${result.posted ? "Posted" : "Already reviewed"} · risk ${result.review.risk} · merge ${result.review.merge ? "yes" : "no"} · ${result.review.findings.length} findings\n`)
+      // The merge job of the same run reads the review from this output.
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `review=${JSON.stringify(result.review)}\n`)
+      io.err(`Posted · risk ${result.review.risk} · merge ${result.review.merge ? "yes" : "no"} · ${result.review.findings.length} findings\n`)
       return result.failed ? 1 : 0
     }
-    const result = await runMerge({ request, ...target, reviewer: reviewer() })
+    const result = await runMerge({ request, ...target, review: process.env.TUG_REVIEW ? Review.parse(JSON.parse(process.env.TUG_REVIEW)) : null, base: process.env.TUG_BASE || undefined })
     io.out(`${JSON.stringify({ action: result.decision.action, merged: result.merged, reason: result.decision.reason, head: result.state.head }, null, 2)}\n`)
     io.err(`${result.decision.action}${result.merged ? " · merged" : ""} · ${result.decision.reason}\n`)
     return result.decision.action === "merge" && !result.merged ? 1 : 0
