@@ -229,3 +229,16 @@ export async function setLabel(request: Request, repo: string, number: number, l
   })
   await request("POST", `/repos/${repo}/issues/${number}/labels`, { body: { labels: [label] } })
 }
+
+export interface PullComment {
+  author: string
+  body: string
+}
+
+/** The pull request's latest conversation comments (its last page of 50), oldest first. */
+export async function pullComments(request: Request, repo: string, number: number): Promise<PullComment[]> {
+  const issue = await request<Json>("GET", `/repos/${repo}/issues/${number}`)
+  const pages = Math.max(1, Math.ceil((Number(issue.comments) || 0) / 50))
+  const batch = await request<Json[]>("GET", `/repos/${repo}/issues/${number}/comments?per_page=50&page=${pages}`)
+  return batch.map((comment) => ({ author: str((comment.user as Json | undefined)?.login), body: str(comment.body) }))
+}

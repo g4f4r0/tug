@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { z } from "zod"
 import { parsePolicy, riskRank, RISKS, SEVERITIES, VERSION, Review, type Finding, type Risk } from "./contracts.ts"
 import { ask, type ModelSettings } from "./engine.ts"
-import { fileAt, pullFiles, pullInfo, pullReviews, setLabel, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
+import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
 
 export const KINDS = ["code", "security"] as const
 /** Only a marker that ends the body counts, so one quoted in a finding can't stand in for it. */
@@ -64,7 +64,7 @@ export function commentableLines(patch: string | undefined): Set<number> {
 }
 
 /** The pull request as the model reads it, and whether every patch fit. */
-export function describePull(pull: PullInfo, files: PullFile[], rules: string[], earlier: Finding[]): { text: string; complete: boolean } {
+export function describePull(pull: PullInfo, files: PullFile[], rules: string[], earlier: Finding[], comments: PullComment[] = []): { text: string; complete: boolean } {
   let used = 0
   let complete = true
   const parts = files.map((file) => {
@@ -85,6 +85,7 @@ export function describePull(pull: PullInfo, files: PullFile[], rules: string[],
     `Author: ${pull.author}`,
     `Base branch: ${pull.base}`,
     `Body:\n${pull.body || "(empty)"}`,
+    `Comments, newest last:\n${comments.length > 0 ? comments.map((comment) => `- ${comment.author}: ${comment.body.slice(0, 1000)}`).join("\n") : "(none)"}`,
     `Repository rules:\n${rules.length > 0 ? rules.map((rule) => `- ${rule}`).join("\n") : "(none)"}`,
     `Findings already raised on earlier commits, not to raise again:\n${earlier.length > 0 ? earlier.map((finding) => `- ${finding.path}:${finding.line ?? 0} ${finding.title}`).join("\n") : "(none)"}`,
     `Changed files (${files.length}):\n\n${parts.join("\n\n")}`,
@@ -156,7 +157,7 @@ export async function runReview(input: { request: Request; repo: string; number:
   // The policy comes from the base branch, so a pull request can't loosen its own review.
   const policy = parsePolicy(await fileAt(request, repo, "tug.json", pull.baseSha))
   const files = await pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles)
-  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings)
+  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, await pullComments(request, repo, number))
   const answers = Object.fromEntries(
     await Promise.all(
       KINDS.map(async (kind) => [kind, await ask({ settings: input.settings, system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review`, request: input.model })] as const),

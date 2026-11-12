@@ -63,6 +63,7 @@ describe("reading the change", () => {
   it("counts a text change without a patch as not seen whole", () => {
     expect(describePull(pull, [{ path: "big.ts", status: "modified", additions: 9000, deletions: 0 }], [], []).complete).toBe(false)
     expect(describePull(pull, [{ path: "logo.png", status: "added", additions: 0, deletions: 0 }], [], []).complete).toBe(true)
+    expect(describePull(pull, [], [], [], [{ author: "ana", body: "Wait for Friday." }]).text).toContain("Comments, newest last:\n- ana: Wait for Friday.")
     expect(describePull(pull, [{ path: "b.ts", previous: "a.ts", status: "renamed", additions: 0, deletions: 0, patch: "" }], [], []).text).toContain("### b.ts (renamed from a.ts")
   })
 

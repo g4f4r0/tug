@@ -14,6 +14,6 @@ Risk rates the whole pull request:
 - medium: it changes runtime behavior or anything customers see (application code, UI, copy, templates, prices, content that goes live on merge), or a medium finding is open.
 - low: only docs, tests, comments, internal tooling text, or a small refactor with no behavior change, and no finding above low.
 
-Merge is true only when every one of these holds: risk is low; the change does what the title says, without unrelated edits; merging makes nothing live for customers; no comment or body text asks to wait; and nothing touches auth, secrets, permissions, payments, personal data, migrations, CI or deploy configuration, or dependencies. When unsure, merge is false.
+Merge is true only when every one of these holds: risk is low; the change does what the title says, without unrelated edits; merging makes nothing live for customers; no comment or body text asks to wait or for a person to look; and nothing touches auth, secrets, permissions, payments, personal data, migrations, CI or deploy configuration, or dependencies. When unsure, merge is false.
 
 Reason is one sentence of at most 200 characters naming the deciding fact.
