@@ -5,6 +5,67 @@
     "$schema": {
       "type": "string"
     },
+    "review": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "default": true,
+          "type": "boolean"
+        },
+        "security": {
+          "default": true,
+          "type": "boolean"
+        },
+        "drafts": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "filters": {
+          "type": "object",
+          "properties": {
+            "authors": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "branches": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "labels": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "paths": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "merge": {
       "type": "object",
       "properties": {
@@ -28,6 +89,14 @@
               }
             },
             "branches": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "labels": {
               "minItems": 1,
               "type": "array",
               "items": {

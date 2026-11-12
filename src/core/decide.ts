@@ -1,5 +1,5 @@
 import { riskRank, type Policy, type PullState, type Review } from "../contracts.ts"
-import { passes } from "./filters.ts"
+import { labelsMiss, passes } from "./filters.ts"
 import { describeState } from "./state.ts"
 
 /**
@@ -26,12 +26,18 @@ export function decide(input: { state: PullState; review: Review | null; policy:
   const filters = merge.filters ?? {}
   if (!passes(filters.authors, state.author, { caseless: true })) return { action: "hold", reason: `The author ${state.author} is not in merge.filters.authors.` }
   if (!passes(filters.branches, state.base)) return { action: "hold", reason: `The base branch ${state.base} is not in merge.filters.branches.` }
+  const label = labelsMiss(filters.labels, state.labels)
+  if (label !== null) return { action: "hold", reason: label ? `The label ${label} is excluded by merge.filters.labels.` : "No label is in merge.filters.labels." }
   if (files.length === 0) return { action: "hold", reason: "No changed files were read." }
   // A pull request's own workflows run with a token that posts as the same bot, so one that changes them could forge a review.
   const workflows = files.filter((file) => file.startsWith(".github/"))
   if (workflows.length > 0) return { action: "hold", reason: `${workflows[0]} changes the repository's GitHub configuration.` }
+  const list = (paths: string[]) => `${paths.slice(0, 3).join(", ")}${paths.length > 3 ? ` and ${paths.length - 3} more` : ""}`
   const outside = files.filter((file) => !passes(filters.paths, file))
-  if (outside.length > 0) return { action: "hold", reason: `${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` and ${outside.length - 3} more` : ""} not in merge.filters.paths.` }
+  if (outside.length > 0) return { action: "hold", reason: `${list(outside)} not in merge.filters.paths.` }
+  // Tug merges only what its review read.
+  const unread = files.filter((file) => !passes(policy.review?.filters?.paths, file))
+  if (unread.length > 0) return { action: "hold", reason: `${list(unread)} not reviewed, because not in review.filters.paths.` }
 
   if (!review) return { action: "hold", reason: `No review of ${state.head.slice(0, 7)} was found.` }
   if (review.head !== state.head) return { action: "hold", reason: `The review is of ${review.head.slice(0, 7)}, not the head ${state.head.slice(0, 7)}.` }

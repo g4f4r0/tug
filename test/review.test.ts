@@ -8,7 +8,7 @@ import type { Request } from "../src/forge/github.ts"
 import { keysConfig, keysServer, verifyToken } from "../src/keys.ts"
 import { runMerge } from "../src/merge.ts"
 import { pullFiles } from "../src/forge/github.ts"
-import { combine, commentableLines, describePull, readMarker, render, writeMarker } from "../src/review.ts"
+import { combine, commentableLines, describePull, readMarker, render, runReview, writeMarker } from "../src/review.ts"
 
 const HEAD = "a".repeat(40)
 const answer = (overrides: Record<string, unknown> = {}) => ({ findings: [], risk: "low" as const, merge: true, reason: "Docs only.", ...overrides })
@@ -20,6 +20,12 @@ describe("combine", () => {
     expect(combine(HEAD, { code: answer(), security: answer({ merge: false, reason: "Widens a token." }) }, null, true)).toMatchObject({ merge: false, reason: "Widens a token." })
     expect(combine(HEAD, { code: answer(), security: answer() }, null, false)).toMatchObject({ merge: false, reason: "The diff is too large to review whole." })
     expect(combine(HEAD, { code: answer({ risk: "medium" }), security: answer() }, null, true).merge).toBe(false)
+  })
+
+  it("combines a single pass on its own", () => {
+    expect(combine(HEAD, { security: answer({ reason: "No secrets." }) }, null, true)).toMatchObject({ risk: "low", merge: true, reason: "No secrets." })
+    expect(combine(HEAD, { code: answer({ risk: "medium", merge: false, reason: "Risky." }) }, null, true)).toMatchObject({ risk: "medium", merge: false, reason: "Risky." })
+    expect(combine(HEAD, {}, null, true)).toMatchObject({ merge: false })
   })
 
   it("counts a critical or high finding as high risk, and never lowers an earlier risk", () => {
@@ -59,7 +65,7 @@ describe("markers and rendering", () => {
 })
 
 describe("reading the change", () => {
-  const pull = { title: "t", body: "", head: HEAD, base: "main", baseSha: "c".repeat(40), author: "a", draft: false, changedFiles: 1 }
+  const pull = { title: "t", body: "", head: HEAD, base: "main", baseSha: "c".repeat(40), author: "a", draft: false, labels: [], changedFiles: 1 }
   it("counts a text change without a patch as not seen whole", () => {
     expect(describePull(pull, [{ path: "big.ts", status: "modified", additions: 9000, deletions: 0 }], [], []).complete).toBe(false)
     expect(describePull(pull, [{ path: "logo.png", status: "added", additions: 0, deletions: 0 }], [], []).complete).toBe(true)
@@ -391,8 +397,16 @@ describe("merge", () => {
     const held = await run({ review: { ...review, merge: false, reason: "Prices change." } })
     expect(held.decision).toEqual({ action: "hold", reason: "Prices change." })
     expect(held.calls.filter((call) => call.startsWith("POST") && !call.endsWith("/graphql"))).toEqual(["POST /repos/g4f4r0/x/labels", "POST /repos/g4f4r0/x/issues/5/labels", "POST /repos/g4f4r0/x/issues/5/comments"])
-    expect((await run({ review: null })).decision.action).toBe("hold")
+    const unreviewed = await run({ review: null })
+    expect(unreviewed.decision).toEqual({ action: "hold", reason: `No review of ${HEAD.slice(0, 7)} was found.` })
+    expect(unreviewed.calls.some((call) => call.startsWith("PUT"))).toBe(false)
     expect((await run({ labels: ["needs:human"] })).decision.action).toBe("wait")
+  })
+
+  it("holds on merge.filters.labels", async () => {
+    const policy = JSON.stringify({ merge: { risk: "low", filters: { labels: ["!wip"] } } })
+    expect((await run({ policy, labels: ["WIP"] })).decision).toEqual({ action: "hold", reason: "The label WIP is excluded by merge.filters.labels." })
+    expect((await run({ policy, labels: ["docs"] })).merged).toBe(true)
   })
 
   it("waits when retargeted after the review, and counts a finished check named merge", async () => {
@@ -417,5 +431,110 @@ describe("merge", () => {
     const pending = await run({ runs: [{ name: "deploy-preview", status: "in_progress", conclusion: null }] })
     expect(pending.decision).toMatchObject({ action: "wait" })
     expect(pending.calls.some((call) => call.startsWith("PUT"))).toBe(false)
+  })
+})
+
+describe("runReview", () => {
+  const PROMPTS = new URL("../prompts/", import.meta.url)
+  const posted = (head: string) => ({ user: { login: "github-actions[bot]" }, commit_id: head, body: `ok\n\n${writeMarker({ version: 1, head, findings: [], risk: "low", merge: true, reason: "x" })}` })
+  function github(overrides: { policy?: unknown; draft?: boolean; author?: string; base?: string; labels?: string[]; files?: { filename: string; patch?: string }[]; reviews?: unknown[] } = {}) {
+    const calls: { method: string; route: string; body?: unknown }[] = []
+    const files = overrides.files ?? [{ filename: "src/a.ts", patch: "@@ -1 +1 @@\n+a" }]
+    const request = (async (method: string, path: string, options?: { body?: unknown }) => {
+      const route = path.split("?")[0]!
+      calls.push({ method, route, body: options?.body })
+      if (method === "GET" && route.endsWith("/pulls/7")) return { title: "t", body: "", draft: overrides.draft ?? false, changed_files: files.length, user: { login: overrides.author ?? "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: overrides.base ?? "main", sha: "c".repeat(40) } }
+      if (route.includes("/contents/tug.json")) {
+        if (overrides.policy === undefined) throw Object.assign(new Error("404"), { status: 404 })
+        return { content: Buffer.from(JSON.stringify(overrides.policy)).toString("base64") }
+      }
+      if (route.endsWith("/pulls/7/reviews") && method === "GET") return overrides.reviews ?? []
+      if (route.includes("/compare/")) return { files: files.map((file) => ({ status: "modified", additions: 1, deletions: 0, ...file })) }
+      if (route.endsWith("/issues/7/comments") && method === "GET") return []
+      if (route.endsWith("/issues/7")) return { labels: (overrides.labels ?? []).map((name) => ({ name })) }
+      if (method === "POST" || method === "DELETE") return {}
+      throw new Error(`unexpected ${method} ${route}`)
+    }) as unknown as Request
+    return { request, calls }
+  }
+  async function review(overrides: Parameters<typeof github>[0] = {}, answers: Record<string, unknown> = {}) {
+    const t = github(overrides)
+    const asked: { name: string; user: string }[] = []
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: { content: string }[]; response_format: { json_schema: { name: string } } }
+      const name = body.response_format.json_schema.name
+      asked.push({ name, user: body.messages[1]!.content })
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers[name] ?? answer()) } }] }))
+    })
+    const settings = { provider: "openai" as const, baseUrl: "http://m/v1", model: "gpt", key: "k" }
+    try {
+      const result = await runReview({ request: t.request, repo: "o/r", number: 7, settings: () => ({ code: settings, security: settings }), reviewer: "github-actions[bot]", promptsDir: PROMPTS })
+      return { result, asked, calls: t.calls, writes: t.calls.filter((call) => call.method !== "GET") }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  }
+
+  it("runs both passes by default and posts one review", async () => {
+    const { result, asked, writes } = await review()
+    expect(asked.map((call) => call.name).sort()).toEqual(["tug_code_review", "tug_security_review"])
+    expect(result).toMatchObject({ review: { risk: "low", merge: true }, failed: false })
+    expect(writes.map((call) => call.route)).toContain("/repos/o/r/pulls/7/reviews")
+  })
+
+  it("skips without a model call or any write, and leaves risk labels alone", async () => {
+    const cases: [Parameters<typeof github>[0], string][] = [
+      [{ policy: { review: { code: false, security: false } } }, "review.code and review.security are off"],
+      [{ draft: true }, "draft"],
+      [{ policy: { review: { filters: { authors: ["!dependabot[bot]"] } } }, author: "Dependabot[bot]" }, "author Dependabot[bot]"],
+      [{ policy: { review: { filters: { branches: ["main"] } } }, base: "dev" }, "base branch dev"],
+      [{ policy: { review: { filters: { labels: ["!no-review"] } } }, labels: ["risk:low", "No-Review"] }, "label No-Review"],
+      [{ policy: { review: { filters: { labels: ["review-me"] } } } }, "no label matches review.filters.labels"],
+      [{ policy: { review: { filters: { paths: ["!**/*.lock"] } } }, files: [{ filename: "a/b.lock", patch: "+x" }] }, "no file matches review.filters.paths"],
+    ]
+    for (const [overrides, reason] of cases) {
+      const { result, asked, writes } = await review(overrides)
+      expect(result).toEqual({ skipped: reason })
+      expect(asked).toEqual([])
+      expect(writes).toEqual([])
+    }
+  })
+
+  it("reviews a draft when review.drafts is on", async () => {
+    expect(await review({ draft: true, policy: { review: { drafts: true } } })).toMatchObject({ result: { review: { merge: true } } })
+  })
+
+  it("runs only the pass that is on, and combines and fails on it alone", async () => {
+    const high = answer({ findings: [finding({ severity: "high" })], risk: "high", merge: false, reason: "Breaks." })
+    const { result, asked } = await review({ policy: { review: { code: false }, merge: { risk: "low" } } }, { tug_security_review: high })
+    expect(asked.map((call) => call.name)).toEqual(["tug_security_review"])
+    expect(result).toMatchObject({ review: { risk: "high", merge: false, reason: "Breaks.", findings: [{ kind: "security", severity: "high" }] }, failed: true })
+    const code = await review({ policy: { review: { security: false } } })
+    expect(code.asked.map((call) => call.name)).toEqual(["tug_code_review"])
+    expect(code.result).toMatchObject({ review: { merge: true } })
+  })
+
+  it("sends only the patches of files in review.filters.paths", async () => {
+    const { asked } = await review({ policy: { review: { filters: { paths: ["!**/*.lock", "!dist/**"] } } }, files: [{ filename: "src/a.ts", patch: "+kept" }, { filename: "pnpm.lock", patch: "+lock" }, { filename: "dist/a.js", patch: "+built" }] })
+    for (const { user } of asked) {
+      expect(user).toContain("Changed files (1):")
+      expect(user).toContain("+kept")
+      expect(user).not.toContain("+lock")
+      expect(user).not.toContain("+built")
+    }
+  })
+
+  it("stops at review.max, counting Tug's own earlier reviews, with needs:human and one comment", async () => {
+    const reviews = [posted("b".repeat(40)), posted("d".repeat(40)), { ...posted("e".repeat(40)), user: { login: "someone" } }]
+    const under = await review({ policy: { review: { max: 3 } }, reviews })
+    expect(under.result).toHaveProperty("review")
+    const limit = await review({ policy: { review: { max: 2 } }, reviews })
+    expect(limit.result).toEqual({ skipped: "review limit 2 reached" })
+    expect(limit.asked).toEqual([])
+    expect(limit.writes.map((call) => `${call.method} ${call.route}`)).toEqual(["POST /repos/o/r/labels", "POST /repos/o/r/issues/7/labels", "POST /repos/o/r/issues/7/comments"])
+    expect(limit.writes[1]!.body).toEqual({ labels: ["needs:human"] })
+    const again = await review({ policy: { review: { max: 2 } }, reviews, labels: ["needs:human"] })
+    expect(again.result).toEqual({ skipped: "review limit 2 reached" })
+    expect(again.writes).toEqual([])
   })
 })

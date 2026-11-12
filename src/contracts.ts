@@ -60,24 +60,42 @@ export type Review = z.infer<typeof Review>
 
 const patterns = z.array(z.string().min(1)).min(1)
 
+/** Which pull requests a section applies to. */
+const Filters = z.strictObject({
+  /** The pull request's author. */
+  authors: patterns.optional(),
+  /** The pull request's base branch. */
+  branches: patterns.optional(),
+  /** The pull request's labels: none may be excluded, and with an include pattern, one must match. */
+  labels: patterns.optional(),
+  /** Merge: every changed file must pass. Review: only the files that pass are reviewed. */
+  paths: patterns.optional(),
+})
+
+const ReviewPolicy = z.strictObject({
+  /** The code pass. */
+  code: z.boolean().default(true),
+  /** The security pass. */
+  security: z.boolean().default(true),
+  /** Whether draft pull requests are reviewed. */
+  drafts: z.boolean().default(false),
+  /** The most Tug reviews per pull request. */
+  max: z.number().int().positive().optional(),
+  filters: Filters.optional(),
+})
+export type ReviewPolicy = z.infer<typeof ReviewPolicy>
+
 /** `tug.json` at the repository root. Unknown keys are errors, so a typo never drops a filter. */
 export const Policy = z.strictObject({
   $schema: z.string().optional(),
+  /** Absent: Tug runs both passes on every pull request that isn't a draft. */
+  review: ReviewPolicy.optional(),
   /** Absent: Tug reviews and never merges. */
   merge: z
     .strictObject({
       /** The highest risk that merges by itself. */
       risk: z.enum(RISKS),
-      filters: z
-        .strictObject({
-          /** Who may be auto-merged. */
-          authors: patterns.optional(),
-          /** The pull request's base branch. */
-          branches: patterns.optional(),
-          /** Every changed file must pass. */
-          paths: patterns.optional(),
-        })
-        .optional(),
+      filters: Filters.optional(),
     })
     .optional(),
   /** Repository rules the reviewer reads on top of Tug's defaults. */
@@ -85,8 +103,14 @@ export const Policy = z.strictObject({
 })
 export type Policy = z.infer<typeof Policy>
 
+/** The policy's review settings, with their defaults when `tug.json` has no `review`. */
+export const reviewPolicy = (policy: Policy): ReviewPolicy => policy.review ?? ReviewPolicy.parse({})
+
 /** Parses `tug.json` text; a missing file is an empty policy. Throws on invalid JSON or shape. */
 export function parsePolicy(text: string | null): Policy {
   if (text === null) return {}
-  return Policy.parse(JSON.parse(text))
+  const policy = Policy.parse(JSON.parse(text))
+  // A merge reads the review of its head, so with no pass on, nothing could ever merge.
+  if (policy.merge && !reviewPolicy(policy).code && !reviewPolicy(policy).security) throw new Error("tug.json: merge needs review.code or review.security")
+  return policy
 }

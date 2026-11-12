@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs"
 import { z } from "zod"
-import { parsePolicy, riskRank, RISKS, SEVERITIES, VERSION, Review, type Finding, type Risk } from "./contracts.ts"
+import { parsePolicy, reviewPolicy, riskRank, RISKS, SEVERITIES, VERSION, Review, type Finding, type ReviewPolicy, type Risk } from "./contracts.ts"
+import { labelsMiss, passes } from "./core/filters.ts"
 import { ask, type Pass, type PassSettings } from "./engine.ts"
-import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
+import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, touchedPaths, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
+import { holdForHuman } from "./merge.ts"
 
 const KINDS = ["code", "security"] as const
+type Kind = (typeof KINDS)[number]
 /** Only a marker that ends the body counts, so one quoted in a finding can't stand in for it. */
 const MARKER = /<!-- tug:review ([A-Za-z0-9_-]+) -->\s*$/u
 /** Characters of patches sent to the model; past this the review can't see the whole change, so it never says merge. */
@@ -97,13 +100,14 @@ const key = (finding: Pick<Finding, "path" | "title">) => `${finding.path}\n${fi
 const rank = (severity: Finding["severity"]) => SEVERITIES.indexOf(severity)
 const maxRisk = (...risks: Risk[]) => RISKS[Math.max(...risks.map(riskRank))]!
 
-/** Combines the kinds' answers into one review of `head`, never lower in risk than `earlier`, without re-raised findings. */
-export function combine(head: string, answers: Record<(typeof KINDS)[number], KindAnswer>, earlier: Review | null, complete: boolean): Review {
+/** Combines the answers of the kinds that ran into one review of `head`, never lower in risk than `earlier`, without re-raised findings. */
+export function combine(head: string, answers: Partial<Record<Kind, KindAnswer>>, earlier: Review | null, complete: boolean): Review {
+  const given = KINDS.flatMap((kind) => (answers[kind] ? [{ kind, answer: answers[kind] }] : []))
   const raised = new Set((earlier?.findings ?? []).map(key))
   const seen = new Set<string>()
   const findings: Finding[] = []
-  for (const kind of KINDS) {
-    for (const found of answers[kind].findings) {
+  for (const { kind, answer } of given) {
+    for (const found of answer.findings) {
       const finding: Finding = { kind, severity: found.severity, path: found.path, title: found.title, body: found.confidence === "investigate" ? `${found.body} (investigate)` : found.body, ...(found.line > 0 ? { line: found.line } : {}) }
       if (raised.has(key(finding)) || seen.has(key(finding))) continue
       seen.add(key(finding))
@@ -112,10 +116,10 @@ export function combine(head: string, answers: Record<(typeof KINDS)[number], Ki
   }
   findings.sort((a, b) => rank(a.severity) - rank(b.severity))
   const blocking = findings.some((finding) => rank(finding.severity) <= rank("high"))
-  const risk = maxRisk(answers.code.risk, answers.security.risk, blocking ? "high" : "low", earlier?.risk ?? "low")
-  const holding = KINDS.find((kind) => !answers[kind].merge)
-  const merge = complete && !holding && risk === "low"
-  const reason = !complete ? "The diff is too large to review whole." : holding ? answers[holding].reason : answers.code.reason
+  const risk = maxRisk(...given.map(({ answer }) => answer.risk), blocking ? "high" : "low", earlier?.risk ?? "low")
+  const holding = given.find(({ answer }) => !answer.merge)
+  const merge = complete && given.length > 0 && !holding && risk === "low"
+  const reason = !complete ? "The diff is too large to review whole." : (holding ?? given[0])?.answer.reason ?? ""
   return { version: VERSION, head, findings, risk, merge, reason: reason.slice(0, 200) || "No reason given." }
 }
 
@@ -141,37 +145,61 @@ export function render(review: Review, files: PullFile[], since: string | null):
 
 const labelsOf = async (request: Request, repo: string, number: number) => ((await request<{ labels?: { name?: string }[] }>("GET", `/repos/${repo}/issues/${number}`)).labels ?? []).map((label) => label.name ?? "")
 
-interface ReviewResult {
-  review: Review
-  /** A new critical or high finding: the check fails. */
-  failed: boolean
+/** A posted review, and whether a new critical or high finding fails the check; or why Tug did not review. */
+type ReviewResult = { review: Review; failed: boolean } | { skipped: string }
+
+/** Why Tug doesn't review this pull request at all under `settings`, or null when it does. */
+export function skipReason(settings: ReviewPolicy, pull: PullInfo): string | null {
+  const filters = settings.filters ?? {}
+  if (!settings.code && !settings.security) return "review.code and review.security are off"
+  if (pull.draft && !settings.drafts) return "draft"
+  if (!passes(filters.authors, pull.author, { caseless: true })) return `author ${pull.author}`
+  if (!passes(filters.branches, pull.base)) return `base branch ${pull.base}`
+  const label = labelsMiss(filters.labels, pull.labels)
+  if (label !== null) return label ? `label ${label}` : "no label matches review.filters.labels"
+  return null
 }
 
-/** Reviews the pull request's head with every kind, posts one COMMENT review, and sets its `risk:*` label. */
-export async function runReview(input: { request: Request; repo: string; number: number; settings: Record<Pass, PassSettings>; reviewer: string; promptsDir: URL }): Promise<ReviewResult> {
+/** The files the review reads: those with a path in `review.filters.paths`, both sides of a rename counted. */
+export const reviewedFiles = (settings: ReviewPolicy, files: PullFile[]) => files.filter((file) => touchedPaths([file]).some((path) => passes(settings.filters?.paths, path)))
+
+/**
+ * Reviews the pull request's head with each kind `tug.json` turns on, posts one COMMENT review, and sets its `risk:*`
+ * label. It posts nothing when the policy skips the pull request, and at `review.max` it adds `needs:human` instead.
+ */
+export async function runReview(input: { request: Request; repo: string; number: number; settings: () => Record<Pass, PassSettings>; reviewer: string; promptsDir: URL }): Promise<ReviewResult> {
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
-  const [done, policyText, files, conversation] = await Promise.all([
+  // The policy comes from the base branch, so a pull request can't loosen its own review.
+  const policy = parsePolicy(await fileAt(request, repo, "tug.json", pull.baseSha))
+  const settings = reviewPolicy(policy)
+  const skipped = skipReason(settings, pull)
+  if (skipped) return { skipped }
+  const [done, files, conversation] = await Promise.all([
     tugReviews(request, repo, number, input.reviewer),
-    // The policy comes from the base branch, so a pull request can't loosen its own review.
-    fileAt(request, repo, "tug.json", pull.baseSha),
     pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles),
     pullComments(request, repo, number),
   ])
+  const reviewed = reviewedFiles(settings, files)
+  if (settings.filters?.paths && reviewed.length === 0) return { skipped: "no file matches review.filters.paths" }
+  if (settings.max !== undefined && done.length >= settings.max) {
+    await holdForHuman(request, repo, number, pull.labels, `Tug reached its limit of ${settings.max} reviews on this pull request, so a person takes it from here.`)
+    return { skipped: `review limit ${settings.max} reached` }
+  }
   const earlier = done.at(-1) ?? null
   const earlierFindings = done.flatMap((review) => review.findings)
-  const policy = parsePolicy(policyText)
-  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, conversation)
+  const { text, complete } = describePull(pull, reviewed, policy.rules ?? [], earlierFindings, conversation)
+  const models = input.settings()
   const answers = Object.fromEntries(
     await Promise.all(
-      KINDS.map(async (kind) => [kind, await ask({ settings: input.settings[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review` })] as const),
+      KINDS.filter((kind) => settings[kind]).map(async (kind) => [kind, await ask({ settings: models[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review` })] as const),
     ),
-  ) as Record<(typeof KINDS)[number], KindAnswer>
+  ) as Partial<Record<Kind, KindAnswer>>
   const review = combine(pull.head, answers, earlier ? { ...earlier, findings: earlierFindings } : null, complete)
 
   const now = await pullInfo(request, repo, number)
   if (now.head !== pull.head) throw new Error(`The head moved from ${pull.head.slice(0, 7)} to ${now.head.slice(0, 7)} during the review; nothing was posted`)
-  const { body, comments } = render(review, files, earlier?.head ?? null)
+  const { body, comments } = render(review, reviewed, earlier?.head ?? null)
   await request("POST", `/repos/${repo}/pulls/${number}/reviews`, { body: { commit_id: pull.head, event: "COMMENT", body, comments } })
   await setLabel(request, repo, number, `risk:${review.risk}`, await labelsOf(request, repo, number), RISK_COLORS[review.risk])
   return { review, failed: review.findings.some((finding) => rank(finding.severity) <= rank("high")) }

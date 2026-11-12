@@ -32,6 +32,7 @@ const USAGE = `Usage:
   tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--settle <s>] [--until-merged] [--require <check>]... [--ignore <check>]...
 
 tug review posts one review of the head (code and security) and its risk:* label, and fails on a new high finding.
+  It prints "skipped: <reason>" and exits 0 when tug.json's review settings leave the pull request out.
 tug merge merges the head when tug.json allows it, or holds it with needs:human. It reads the review from TUG_REVIEW.
 tug init writes .github/workflows/tug.yml (tests and review) in this directory; --merge adds the merge job and tug.json.
   --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
@@ -182,7 +183,12 @@ async function job(command: "review" | "merge", ref: string, io: Io): Promise<nu
   try {
     const request = client(await token())
     if (command === "review") {
-      const result = await runReview({ request, ...target, settings: modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS })
+      const result = await runReview({ request, ...target, settings: () => modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS })
+      // No review output: the merge job then has no review of the head, and never merges it.
+      if ("skipped" in result) {
+        io.out(`skipped: ${result.skipped}\n`)
+        return 0
+      }
       io.out(`${JSON.stringify(result.review, null, 2)}\n`)
       // The merge job of the same run reads the review from this output.
       if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `review=${JSON.stringify(result.review)}\n`)

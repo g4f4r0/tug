@@ -14,7 +14,7 @@ The examples below write `tug` for that.
 
 ## How it works
 
-1. The `review` job sends the pull request's title, body, comments, patches and rules to the model twice: once for correctness ([prompts/code.md](prompts/code.md)) and once for security ([prompts/security.md](prompts/security.md)). It posts one review with inline comments and a `risk:low`, `risk:medium` or `risk:high` label. It fails on a new critical or high finding.
+1. The `review` job sends the pull request's title, body, comments, patches and rules to the model twice (unless `tug.json` turns a pass off): once for correctness ([prompts/code.md](prompts/code.md)) and once for security ([prompts/security.md](prompts/security.md)). It posts one review with inline comments and a `risk:low`, `risk:medium` or `risk:high` label. It fails on a new critical or high finding.
 2. The `merge` job runs after the tests and the review. It squash-merges the exact commit the review saw when `tug.json` allows it, every check passed, no thread is open, and the risk is within the policy. Otherwise it labels the pull request `needs:human` and says why in one comment.
 
 Tug never runs the pull request's code; it reads the change through the GitHub API. It never merges a change to `.github/`. A re-review skips findings it already raised and never lowers the risk.
@@ -49,18 +49,32 @@ On your own runners, the key service holds these instead, and the repository nee
 
 ```json
 {
+  "review": {
+    "code": true,
+    "security": true,
+    "drafts": false,
+    "max": 20,
+    "filters": { "authors": ["!dependabot[bot]"], "branches": ["main"], "labels": ["!no-review"], "paths": ["!**/*.lock", "!dist/**"] }
+  },
   "merge": {
     "risk": "low",
-    "filters": { "authors": ["octocat"], "branches": ["main"], "paths": ["docs/**", "!docs/legal/**"] }
+    "filters": { "authors": ["octocat"], "branches": ["main"], "labels": ["!wip"], "paths": ["docs/**"] }
   },
   "rules": ["Prices live in config/prices.json; any change to it needs a person."]
 }
 ```
 
-1. `merge.risk` is the highest risk Tug merges by itself. Without `merge`, Tug only reviews.
-2. `filters` work like GitHub Actions' branch and path filters. Every changed file must match `paths`.
-3. `rules` add to the review's defaults.
-4. Tug reads `tug.json` from the base branch, so a pull request can't loosen its own rules.
+1. `review` and each of its fields are optional. Without it, Tug runs both passes on every pull request that isn't a draft.
+2. `review.code` and `review.security` turn each pass on or off (default on). With both off, Tug doesn't review, and `merge` is an error.
+3. `review.drafts` reviews draft pull requests too (default off).
+4. `review.max` is the most reviews Tug posts on one pull request. Once it is reached, Tug adds `needs:human` and says so in one comment.
+5. `merge.risk` is the highest risk Tug merges by itself. Without `merge`, Tug only reviews.
+6. `filters` take the pull request's `authors`, base `branches`, `labels` and changed `paths`. They work like GitHub Actions' branch and path filters: globs, `!` to exclude, and the last match wins.
+7. A pull request passes `labels` when none of its labels is excluded and, if the list names any to include, it has one of them. Case doesn't matter. A label change counts from the next push.
+8. In `review.filters`, the model sees only the files that match `paths`, and Tug never merges a file the review didn't see. In `merge.filters`, every changed file must match.
+9. When `review` leaves a pull request out, the review job prints `skipped: <reason>` and posts nothing. The merge then holds it for a person with `needs:human`.
+10. `rules` add to the review's defaults.
+11. Tug reads `tug.json` from the base branch, so a pull request can't loosen its own rules.
 
 ## Your own runners
 
