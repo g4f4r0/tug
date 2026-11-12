@@ -1,0 +1,17 @@
+[Unit]
+Description=Tug runner slot %i
+Wants=network-online.target
+After=network-online.target tug-egress.service
+# No runner without the egress rules: it doesn't start if they fail, and stops before they are removed.
+Requires=tug-egress.service
+BindsTo=tug-egress.service
+
+[Service]
+ExecStart=/usr/local/lib/tug/pool.sh %i
+Restart=always
+RestartSec=30
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

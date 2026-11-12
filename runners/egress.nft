@@ -1,0 +1,17 @@
+#!/usr/sbin/nft -f
+# Runner containers may reach the internet, but not this host, its tailnet, or private networks. Rootless Docker's
+# network runs as the pool user, so its traffic is matched by that user's ID. DNS goes to the host's resolver only.
+table inet tug_egress
+delete table inet tug_egress
+
+table inet tug_egress {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    meta skuid != tug-runner accept
+    ip daddr 100.100.100.100 meta l4proto { udp, tcp } th dport 53 accept
+    ip6 daddr fd7a:115c:a1e0::53 meta l4proto { udp, tcp } th dport 53 accept
+    fib daddr type local reject
+    ip daddr { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject
+    ip6 daddr { ::1, fc00::/7, fe80::/10 } reject
+  }
+}

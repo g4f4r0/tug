@@ -111,10 +111,8 @@ The agent that opened the PR runs `tug pr watch <repo>#<n>`, as pstack does with
 
 ## Our infrastructure (Hello Gafaro)
 
-1. Self-hosted runners on g4f4r0-server, ephemeral: `--ephemeral`, one job per container, in Docker under a dedicated user. They get no access to `~/.agents`, Infisical, `~/projects` or agent credentials. The server has 16 cores, 31 GB of RAM and Docker.
-2. Two pools:
-   - `tug-ai`: model settings are injected from Infisical when the container starts, and nothing is stored in GitHub secrets. Only Tug's `review` and `merge` jobs use this pool.
-   - `tug-ci`: no keys. Every job that runs the PR's code uses this pool.
+1. Self-hosted runners on g4f4r0-server, ephemeral: a single-use runner config, one job per container, in rootless Docker under the dedicated user `tug-runner`. They get no access to `~/.agents`, Infisical, `~/projects` or agent credentials, and an egress firewall keeps them off the host, the tailnet and private networks. The server has 16 cores, 31 GB of RAM and Docker.
+2. One pool, `tug`, for every job, and no secret in any container. (Changed on 2026-11-12 from two pools, `tug-ai` with injected model settings and `tug-ci` without: labels don't restrict which workflow uses a runner, so a PR's own workflow could target `tug-ai` and print the key.) A key service on the host holds the model settings from Infisical and forwards model calls only for requests that carry GitHub's OIDC token for Tug's own `review.yml` or `merge.yml`, at a pinned ref, on an allowed repository. Tug's jobs never run the PR's code, so that token stays out of the PR's reach.
 3. Organizations (`hellogafaro`, `Minicoton`, `VenezuelaTeAyuda`) register their runners at the org level. Each personal `g4f4r0` repo needs its own registration. Runners make outgoing connections only. Never use them for public repos.
 
 ## Decisions
