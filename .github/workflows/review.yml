@@ -27,12 +27,6 @@ on:
         required: false
       TUG_SECURITY_REASONING_EFFORT:
         required: false
-      # Accepted and ignored until every repository's tug.yml is regenerated: callers still pass them, and an
-      # undeclared secret fails the call.
-      TUG_MODEL_URL:
-        required: false
-      TUG_MODEL_KEY:
-        required: false
 jobs:
   review:
     name: code and security
