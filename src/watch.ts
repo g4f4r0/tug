@@ -30,8 +30,8 @@ export const MAX_FAILURES = 3
  * Reads the pull request every `intervalMs` while it is PENDING, and returns the first other state. A `timeoutMs` of
  * 0 never times out. A failed read is retried with backoff, up to `MAX_FAILURES` in a row, then thrown.
  *
- * A head with no checks at all counts as PENDING for the first `settleMs`: right after a push, the forge may not have
- * registered the head's checks yet, and the head would read as READY too early.
+ * A head with no checks at all counts as PENDING for its first `settleMs`, timed from when the watch first saw that
+ * head: right after a push, the forge may not have registered the head's checks yet, and it would read READY too early.
  */
 export async function watch(input: {
   read: () => Promise<PullState>
@@ -43,16 +43,23 @@ export async function watch(input: {
 }): Promise<WatchResult> {
   const now = input.now ?? Date.now
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
-  const started = now()
-  const deadline = input.timeoutMs > 0 ? started + input.timeoutMs : Number.POSITIVE_INFINITY
-  const settled = (pull: PullState) => pull.state !== "READY" || pull.passed.length > 0 || now() - started >= (input.settleMs ?? 0)
+  const deadline = input.timeoutMs > 0 ? now() + input.timeoutMs : Number.POSITIVE_INFINITY
+  let head = ""
+  let seen = now()
+  const settled = (pull: PullState) => {
+    if (pull.head !== head) {
+      head = pull.head
+      seen = now()
+    }
+    return pull.state !== "READY" || pull.passed.length > 0 || now() - seen >= (input.settleMs ?? 0)
+  }
   let failures = 0
   let last: PullState | undefined
   for (;;) {
     try {
       last = await input.read()
       failures = 0
-      if (last.state !== "PENDING" && settled(last)) return { state: last, exit: exitCode(last.state), timedOut: false }
+      if (settled(last) && last.state !== "PENDING") return { state: last, exit: exitCode(last.state), timedOut: false }
     } catch (error) {
       failures++
       if (failures >= MAX_FAILURES) throw error

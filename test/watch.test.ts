@@ -35,6 +35,14 @@ describe("watch", () => {
     expect(checked.sleeps).toEqual([])
   })
 
+  it("restarts the settle window when a push changes the head", async () => {
+    const c = clock()
+    const reads = [pull("PENDING"), pull("PENDING"), pull("PENDING"), { ...pull("READY"), head: "b" }, { ...pull("READY"), head: "b" }, { ...pull("READY"), head: "b" }]
+    const result = await watch({ read: async () => reads.shift()!, intervalMs: 30_000, timeoutMs: 0, settleMs: 60_000, ...c })
+    expect(result).toMatchObject({ exit: 0, state: { head: "b" } })
+    expect(c.sleeps).toHaveLength(5)
+  })
+
   it("times out with exit 5 and the last pending state", async () => {
     const c = clock()
     const result = await watch({ read: async () => pull("PENDING"), intervalMs: 30_000, timeoutMs: 70_000, ...c })
