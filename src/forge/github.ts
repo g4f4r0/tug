@@ -235,10 +235,13 @@ export interface PullComment {
   body: string
 }
 
-/** The pull request's latest conversation comments (its last page of 50), oldest first. */
+/** The pull request's conversation comments, oldest first; past 1000, the review can't see them all and throws. */
 export async function pullComments(request: Request, repo: string, number: number): Promise<PullComment[]> {
-  const issue = await request<Json>("GET", `/repos/${repo}/issues/${number}`)
-  const pages = Math.max(1, Math.ceil((Number(issue.comments) || 0) / 50))
-  const batch = await request<Json[]>("GET", `/repos/${repo}/issues/${number}/comments?per_page=50&page=${pages}`)
-  return batch.map((comment) => ({ author: str((comment.user as Json | undefined)?.login), body: str(comment.body) }))
+  const comments: PullComment[] = []
+  for (let page = 1; page <= 10; page++) {
+    const batch = await request<Json[]>("GET", `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`)
+    for (const comment of batch) comments.push({ author: str((comment.user as Json | undefined)?.login), body: str(comment.body) })
+    if (batch.length < 100) return comments
+  }
+  throw new GitHubError(`${repo}#${number} has more than 1000 comments`)
 }
