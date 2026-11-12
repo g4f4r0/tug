@@ -400,6 +400,12 @@ describe("merge", () => {
     expect((await run({ runs: [{ name: "other / merge", status: "completed", conclusion: "failure" }] })).decision.action).toBe("wait")
   })
 
+  it("ignores only its own running check, not another one named merge", async () => {
+    const test = { name: "test", status: "completed", conclusion: "success" }
+    for (const name of ["deploy / merge", "merge"]) expect((await run({ runs: [test, { name, status: "in_progress", conclusion: null }] })).decision.action).toBe("wait")
+    for (const name of ["squash or hold", "tug-merge / squash or hold"]) expect((await run({ runs: [test, { name, status: "in_progress", conclusion: null }] })).merged).toBe(true)
+  })
+
   it("checks both sides of a rename, read by the head commit", async () => {
     const renamed = await run({ files: [{ filename: "docs/ci.yml", previous_filename: ".github/workflows/ci.yml", status: "renamed" }] })
     expect(renamed.decision).toEqual({ action: "hold", reason: ".github/workflows/ci.yml changes the repository's GitHub configuration." })
