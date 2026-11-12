@@ -15,7 +15,7 @@ read -ra scopes <<<"$TUG_SCOPES"
 scope=${scopes[$(((slot - 1) / TUG_SLOTS))]:?slot $slot is past the last scope}
 if [[ $scope == */* ]]; then api="https://api.github.com/repos/$scope/actions/runners"; else api="https://api.github.com/orgs/$scope/actions/runners"; fi
 owner=${scope%%/*}
-token_name="TUG_RUNNER_GITHUB_TOKEN_$(tr 'a-z-' 'A-Z_' <<<"$owner")"
+token_name="TUG_GITHUB_TOKEN_$(tr 'a-z-' 'A-Z_' <<<"$owner")"
 
 log() { printf '%s\n' "$*" >&2; }
 
@@ -29,8 +29,8 @@ github() {
   local method=$1 url=$2 body=${3:-}
   local token
   token=$(secret "$token_name")
-  [[ -n $token ]] || token=$(secret TUG_RUNNER_GITHUB_TOKEN)
-  [[ -n $token ]] || { log "Neither $token_name nor TUG_RUNNER_GITHUB_TOKEN is set in Infisical"; return 1; }
+  [[ -n $token ]] || token=$(secret TUG_GITHUB_TOKEN)
+  [[ -n $token ]] || { log "Neither $token_name nor TUG_GITHUB_TOKEN is set in Infisical"; return 1; }
   curl -fsS --max-time 30 -X "$method" "$url" \
     -H @<(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n' "$token") \
     ${body:+-d "$body"}
