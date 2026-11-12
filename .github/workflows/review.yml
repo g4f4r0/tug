@@ -45,9 +45,15 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      # Tug runs from its source, which Node runs as is: no build, and only its runtime dependency to install.
+      - name: Get Tug
+        run: |
+          mkdir "$RUNNER_TEMP/tug"
+          curl -fsSL https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
+          npm ci --prefix "$RUNNER_TEMP/tug" --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier
       # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the provider settings.
       - id: review
-        run: npx -y github:hellogafaro/tug#main review "$GITHUB_REPOSITORY#$PR"
+        run: node "$RUNNER_TEMP/tug/src/bin.ts" review "$GITHUB_REPOSITORY#$PR"
         env:
           PR: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ github.token }}
