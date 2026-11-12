@@ -23,7 +23,11 @@ sudo runners/install.sh --uninstall
 Each scope, `owner/repo` or an organization, gets `<slots>` runners. Organization runners join its Default runner
 group, which serves private repositories only.
 
-`<secrets-user>` is the host user whose Infisical login holds, per scope owner, `TUG_GITHUB_TOKEN_<OWNER>` (the
-owner in capitals, `-` as `_`) or else `TUG_GITHUB_TOKEN`: a token that may register runners there
-(Administration: write on a repository; for organizations, a classic token with only `manage_runners:org` covers them all). It also holds `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
-`LLM_REASONING_EFFORT`. Never use self-hosted runners for public repositories.
+The runners sign in as a GitHub App, so one key covers a personal account and every organization. Create it from
+`https://github.com/settings/apps/new?name=<name>&url=https://github.com/hellogafaro/tug&public=true&webhook_active=false&administration=write&organization_self_hosted_runners=write`,
+generate a private key, and install it on each scope's owner. It must be public to install on other accounts; only
+the scopes you list here use it.
+
+`<secrets-user>` is the host user whose Infisical login holds the app's `TUG_APP_ID` and `TUG_APP_PRIVATE_KEY` (a key
+pasted into a one-line field, without its line breaks, works too), and `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and
+optional `LLM_REASONING_EFFORT` for the key service. Never use self-hosted runners for public repositories.
