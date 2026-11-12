@@ -380,3 +380,13 @@ func TestDockerTimesOutEveryCommandButWait(t *testing.T) {
 		t.Fatalf("want wait to run to its end, got %v after %s", err, time.Since(started))
 	}
 }
+
+func TestPruneServicePullsTheRunnerImageAgain(t *testing.T) {
+	unit, err := os.ReadFile("../tug-prune.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), "docker pull --quiet "+runnerImage+"\n") {
+		t.Fatalf("tug-prune.service does not pull %s again", runnerImage)
+	}
+}

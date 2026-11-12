@@ -58,13 +58,16 @@ type config struct {
 	pids    string
 }
 
+// runnerImage is GitHub's runner image; tug-prune.service pulls it again after removing unused images.
+const runnerImage = "ghcr.io/actions/actions-runner:latest"
+
 // loadConfig reads TUG_APP_ID, TUG_APP_PRIVATE_KEY, TUG_ACCOUNTS and optional TUG_MAX_RUNNERS (default 4).
 func loadConfig() (*config, error) {
 	c := &config{
 		appID:   strings.TrimSpace(os.Getenv("TUG_APP_ID")),
 		key:     normalizePEM(os.Getenv("TUG_APP_PRIVATE_KEY")),
 		label:   "tug",
-		image:   "ghcr.io/actions/actions-runner:latest",
+		image:   runnerImage,
 		network: "tug",
 		keys:    "http://172.30.99.1:8787",
 		pids:    "4096",

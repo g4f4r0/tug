@@ -4,6 +4,8 @@ After=docker.service
 
 [Service]
 Type=oneshot
-# Unused for a day: the current runner image is pulled again on the next job.
+# Images built over a day ago that no container uses. The filter goes by build date, so the runner image goes too on a
+# quiet day: pulling it again keeps the next job from waiting for it, and keeps the runner current.
 ExecStart=/usr/bin/docker image prune --all --force --filter until=24h
 ExecStart=/usr/bin/docker builder prune --all --force --filter until=24h
+ExecStart=/usr/bin/docker pull --quiet ghcr.io/actions/actions-runner:latest
