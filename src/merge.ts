@@ -1,7 +1,7 @@
 import { parsePolicy, type PullState } from "./contracts.ts"
 import { decide, type Decision } from "./core/decide.ts"
 import { HUMAN_LABEL, state } from "./core/state.ts"
-import { fileAt, pullFiles, readPull, setLabel, type Request } from "./forge/github.ts"
+import { fileAt, pullFiles, readPull, setLabel, touchedPaths, type Request } from "./forge/github.ts"
 import { tugReviews } from "./review.ts"
 
 /** The merge job's own check run, which is still running while it decides. */
@@ -22,10 +22,12 @@ export async function runMerge(input: { request: Request; repo: string; number: 
   const facts = await readPull({ request, repo, number, wait: input.wait })
   const checks = facts.checks?.filter((run) => !OWN_CHECK.test(run.name))
   const pull = state({ ...facts, checks })
-  const base = await request<{ base?: { sha?: string } }>("GET", `/repos/${repo}/pulls/${number}`)
-  const policy = parsePolicy(await fileAt(request, repo, "tug.json", base.base?.sha ?? pull.base))
+  const info = await request<{ base?: { sha?: string }; changed_files?: number }>("GET", `/repos/${repo}/pulls/${number}`)
+  const baseSha = info.base?.sha ?? pull.base
+  const policy = parsePolicy(await fileAt(request, repo, "tug.json", baseSha))
   const review = (await tugReviews(request, repo, number, input.reviewer)).find((posted) => posted.head === pull.head) ?? null
-  const files = pull.state === "READY" ? (await pullFiles(request, repo, number)).map((file) => file.path) : []
+  // Read by the head commit that merges, so the gates check exactly what lands.
+  const files = pull.state === "READY" ? touchedPaths(await pullFiles(request, repo, baseSha, pull.head, info.changed_files ?? 0)) : []
   const decision = decide({ state: pull, review, policy, files })
 
   if (decision.action === "merge") {

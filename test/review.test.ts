@@ -7,7 +7,8 @@ import { ask, modelSettings } from "../src/engine.ts"
 import type { Request } from "../src/forge/github.ts"
 import { keysServer, verifyToken } from "../src/keys.ts"
 import { runMerge } from "../src/merge.ts"
-import { combine, commentableLines, readMarker, render, writeMarker } from "../src/review.ts"
+import { pullFiles } from "../src/forge/github.ts"
+import { combine, commentableLines, describePull, readMarker, render, writeMarker } from "../src/review.ts"
 
 const HEAD = "a".repeat(40)
 const answer = (overrides: Record<string, unknown> = {}) => ({ findings: [], risk: "low" as const, merge: true, reason: "Docs only.", ...overrides })
@@ -53,6 +54,21 @@ describe("markers and rendering", () => {
     expect(body).toContain("- b.ts:99: Low · Weak. y")
     expect(readMarker(body)).toEqual(review)
     expect(render({ ...review, findings: [] }, files, "b".repeat(40)).body).toMatch(/^No new issues since bbbbbbb\./u)
+  })
+})
+
+describe("reading the change", () => {
+  const pull = { title: "t", body: "", head: HEAD, base: "main", baseSha: "c".repeat(40), author: "a", draft: false, changedFiles: 1 }
+  it("counts a text change without a patch as not seen whole", () => {
+    expect(describePull(pull, [{ path: "big.ts", status: "modified", additions: 9000, deletions: 0 }], [], []).complete).toBe(false)
+    expect(describePull(pull, [{ path: "logo.png", status: "added", additions: 0, deletions: 0 }], [], []).complete).toBe(true)
+    expect(describePull(pull, [{ path: "b.ts", previous: "a.ts", status: "renamed", additions: 0, deletions: 0, patch: "" }], [], []).text).toContain("### b.ts (renamed from a.ts")
+  })
+
+  it("refuses a change GitHub doesn't list whole", async () => {
+    const request = (async () => ({ files: Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })) })) as unknown as Request
+    await expect(pullFiles(request, "o/r", "b", HEAD, 301)).rejects.toThrow("listed 300 of the 301")
+    expect(await pullFiles(request, "o/r", "b", HEAD, 300)).toHaveLength(300)
   })
 })
 
@@ -145,13 +161,13 @@ describe("the key service", () => {
 
 describe("merge", () => {
   const review: Review = { version: 1, head: HEAD, findings: [], risk: "low", merge: true, reason: "Docs only." }
-  function github(overrides: { policy?: string | null; review?: Review | null; runs?: Record<string, unknown>[]; labels?: string[]; files?: string[] } = {}) {
+  function github(overrides: { policy?: string | null; review?: Review | null; runs?: Record<string, unknown>[]; labels?: string[]; files?: Record<string, unknown>[] } = {}) {
     const calls: string[] = []
     let merged = false
     const request = (async (method: string, path: string) => {
       const route = path.split("?")[0]!
       calls.push(`${method} ${route}`)
-      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: "main", sha: "c".repeat(40) } }
+      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: "main", sha: "c".repeat(40) } }
       if (route.endsWith("/check-runs")) return { check_runs: overrides.runs ?? [{ name: "test", status: "completed", conclusion: "success" }, { name: "tug / merge", status: "in_progress", conclusion: null }] }
       if (route.endsWith("/status")) return { statuses: [] }
       if (route === "/graphql") return { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }
@@ -161,7 +177,7 @@ describe("merge", () => {
         return { content: Buffer.from(policy).toString("base64") }
       }
       if (route.endsWith("/reviews")) return overrides.review === null ? [] : [{ user: { login: "github-actions[bot]" }, commit_id: HEAD, body: writeMarker(overrides.review ?? review) }, { user: { login: "intruder" }, commit_id: HEAD, body: writeMarker({ ...review, reason: "fake" }) }]
-      if (route.endsWith("/files")) return (overrides.files ?? ["README.md"]).map((filename) => ({ filename, status: "modified", additions: 1, deletions: 0 }))
+      if (route.includes("/compare/")) return { files: (overrides.files ?? [{}]).map((file) => ({ filename: "README.md", status: "modified", additions: 1, deletions: 0, ...file })) }
       if (method === "PUT" && route.endsWith("/merge")) {
         merged = true
         return { merged: true }
@@ -188,6 +204,12 @@ describe("merge", () => {
     expect(held.calls.filter((call) => call.startsWith("POST") && !call.endsWith("/graphql"))).toEqual(["POST /repos/g4f4r0/x/labels", "POST /repos/g4f4r0/x/issues/5/labels", "POST /repos/g4f4r0/x/issues/5/comments"])
     expect((await run({ review: null })).decision.action).toBe("hold")
     expect((await run({ labels: ["needs:human"] })).decision.action).toBe("wait")
+  })
+
+  it("checks both sides of a rename, read by the head commit", async () => {
+    const renamed = await run({ files: [{ filename: "docs/ci.yml", previous_filename: ".github/workflows/ci.yml", status: "renamed" }] })
+    expect(renamed.decision).toEqual({ action: "hold", reason: ".github/workflows/ci.yml changes the repository's GitHub configuration." })
+    expect(renamed.calls).toContain(`GET /repos/g4f4r0/x/compare/${"c".repeat(40)}...${HEAD}`)
   })
 
   it("only reviews without a merge policy, and waits on another workflow's running check", async () => {

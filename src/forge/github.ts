@@ -147,6 +147,8 @@ export async function pullState(input: { request: Request; repo: string; number:
 
 export interface PullFile {
   path: string
+  /** The path before a rename. */
+  previous?: string
   status: string
   additions: number
   deletions: number
@@ -154,16 +156,19 @@ export interface PullFile {
   patch?: string
 }
 
-/** The pull request's changed files, every page. */
-export async function pullFiles(request: Request, repo: string, number: number): Promise<PullFile[]> {
-  const files: PullFile[] = []
-  for (let page = 1; page <= 30; page++) {
-    const batch = await request<Json[]>("GET", `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`)
-    for (const file of batch) files.push({ path: str(file.filename), status: str(file.status), additions: Number(file.additions) || 0, deletions: Number(file.deletions) || 0, patch: typeof file.patch === "string" ? file.patch : undefined })
-    if (batch.length < 100) return files
-  }
-  throw new GitHubError(`${repo}#${number} has more than 3000 changed files`)
+/**
+ * The files changed from the merge base of `base` to `head`, read by commit so a push during a review can't swap them.
+ * Throws unless that is all `expected` of them: GitHub lists at most 300.
+ */
+export async function pullFiles(request: Request, repo: string, base: string, head: string, expected: number): Promise<PullFile[]> {
+  const compare = await request<{ files?: Json[] }>("GET", `/repos/${repo}/compare/${base}...${head}?per_page=1`)
+  const files = (compare.files ?? []).map((file) => ({ path: str(file.filename), ...(typeof file.previous_filename === "string" ? { previous: file.previous_filename } : {}), status: str(file.status), additions: Number(file.additions) || 0, deletions: Number(file.deletions) || 0, patch: typeof file.patch === "string" ? file.patch : undefined }))
+  if (files.length !== expected) throw new GitHubError(`GitHub listed ${files.length} of the ${expected} changed files of ${head.slice(0, 7)}, so Tug can't see the whole change`)
+  return files
 }
+
+/** Every path a change touches, both sides of a rename included. */
+export const touchedPaths = (files: readonly PullFile[]) => files.flatMap((file) => (file.previous ? [file.previous, file.path] : [file.path]))
 
 export interface PullInfo {
   title: string
@@ -173,13 +178,14 @@ export interface PullInfo {
   baseSha: string
   author: string
   draft: boolean
+  changedFiles: number
 }
 
 export async function pullInfo(request: Request, repo: string, number: number): Promise<PullInfo> {
   const pull = await request<Json>("GET", `/repos/${repo}/pulls/${number}`)
   const head = (pull.head as Json | undefined) ?? {}
   const base = (pull.base as Json | undefined) ?? {}
-  return { title: str(pull.title), body: str(pull.body), head: str(head.sha), base: str(base.ref), baseSha: str(base.sha), author: str((pull.user as Json | undefined)?.login), draft: pull.draft === true }
+  return { title: str(pull.title), body: str(pull.body), head: str(head.sha), base: str(base.ref), baseSha: str(base.sha), author: str((pull.user as Json | undefined)?.login), draft: pull.draft === true, changedFiles: Number(pull.changed_files) || 0 }
 }
 
 /** A file's text at a ref, or null when it doesn't exist. */
