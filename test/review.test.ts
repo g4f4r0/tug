@@ -84,10 +84,10 @@ describe("the engine", () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: answers.shift() } }] }))
     }) as unknown as typeof fetch
     const settings = { baseUrl: "http://m/v1", model: "gpt", key: "k", reasoningEffort: "high" }
-    expect(await ask({ settings, system: "s", user: "u", schema, name: "t", request: fake })).toEqual({ ok: true })
+    expect(await ask({ settings, system: "s", user: "u", schema, name: "t", request: fake, retryWaitMs: 0 })).toEqual({ ok: true })
     expect(bodies).toHaveLength(2)
     expect(bodies[0]).toMatchObject({ model: "gpt", reasoning_effort: "high", response_format: { type: "json_schema", json_schema: { strict: true, schema: { additionalProperties: false } } } })
-    await expect(ask({ settings, system: "s", user: "u", schema, name: "t", request: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch })).rejects.toThrow("500")
+    await expect(ask({ settings, system: "s", user: "u", schema, name: "t", request: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch, retryWaitMs: 0 })).rejects.toThrow("500")
   })
 
   it("uses the key service with the job's OIDC token when TUG_KEYS is set", async () => {

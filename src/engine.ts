@@ -53,15 +53,16 @@ export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typ
 
 /**
  * One chat-completions call whose answer must match `schema`. A failed call or an answer that doesn't match is
- * retried once, then thrown: the caller fails closed.
+ * retried once, after `retryWaitMs` so a restarting model service is back, then thrown: the caller fails closed.
  */
-export async function ask<T extends z.ZodType>(input: { settings: ModelSettings; system: string; user: string; schema: T; name: string; request?: typeof fetch; timeoutMs?: number }): Promise<z.infer<T>> {
+export async function ask<T extends z.ZodType>(input: { settings: ModelSettings; system: string; user: string; schema: T; name: string; request?: typeof fetch; timeoutMs?: number; retryWaitMs?: number }): Promise<z.infer<T>> {
   const { settings, schema } = input
   const request = input.request ?? fetch
   const jsonSchema = toJSONSchema(schema, { target: "draft-7" }) as Record<string, unknown>
   delete jsonSchema.$schema
   let last: unknown
   for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, input.retryWaitMs ?? 30_000))
     try {
       const key = typeof settings.key === "string" ? settings.key : await settings.key()
       const response = await request(`${settings.baseUrl}/chat/completions`, {
