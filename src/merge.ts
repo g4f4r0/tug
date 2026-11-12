@@ -40,11 +40,15 @@ export async function runMerge(input: { request: Request; repo: string; number: 
     if (after.merged && info.head?.ref && info.head.repo?.full_name === repo) await deleteBranch(request, repo, info.head.ref, pull.head)
     return { decision, state: pull, merged: after.merged }
   }
-  if (decision.action === "hold" && !pull.labels.includes(HUMAN_LABEL)) {
-    await setLabel(request, repo, number, HUMAN_LABEL, pull.labels, "5319E7")
-    await request("POST", `/repos/${repo}/issues/${number}/comments`, { body: { body: `Tug held ${pull.head.slice(0, 7)} for a person: ${decision.reason}` } })
-  }
+  if (decision.action === "hold") await holdForHuman(request, repo, number, pull.labels, `Tug held ${pull.head.slice(0, 7)} for a person: ${decision.reason}`)
   return { decision, state: pull, merged: false }
+}
+
+/** Adds `needs:human` and posts `comment`, once: a pull request that already has the label gets neither again. */
+export async function holdForHuman(request: Request, repo: string, number: number, labels: string[], comment: string): Promise<void> {
+  if (labels.includes(HUMAN_LABEL)) return
+  await setLabel(request, repo, number, HUMAN_LABEL, labels, "5319E7")
+  await request("POST", `/repos/${repo}/issues/${number}/comments`, { body: { body: comment } })
 }
 
 /**

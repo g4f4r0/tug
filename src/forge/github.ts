@@ -222,6 +222,7 @@ export interface PullInfo {
   baseSha: string
   author: string
   draft: boolean
+  labels: string[]
   changedFiles: number
 }
 
@@ -229,7 +230,7 @@ export async function pullInfo(request: Request, repo: string, number: number): 
   const pull = await request<Json>("GET", `/repos/${repo}/pulls/${number}`)
   const head = (pull.head as Json | undefined) ?? {}
   const base = (pull.base as Json | undefined) ?? {}
-  return { title: str(pull.title), body: str(pull.body), head: str(head.sha), base: str(base.ref), baseSha: str(base.sha), author: str((pull.user as Json | undefined)?.login), draft: pull.draft === true, changedFiles: Number(pull.changed_files) || 0 }
+  return { title: str(pull.title), body: str(pull.body), head: str(head.sha), base: str(base.ref), baseSha: str(base.sha), author: str((pull.user as Json | undefined)?.login), draft: pull.draft === true, labels: list(pull.labels).map((label) => str(label.name)), changedFiles: Number(pull.changed_files) || 0 }
 }
 
 /** A file's text at a ref, or null when it doesn't exist. */

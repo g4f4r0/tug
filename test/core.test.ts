@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { parsePolicy, PullState, Review, type Policy } from "../src/contracts.ts"
+import { parsePolicy, PullState, Review, reviewPolicy, type Policy } from "../src/contracts.ts"
 import { decide } from "../src/core/decide.ts"
-import { passes } from "../src/core/filters.ts"
+import { labelsMiss, passes } from "../src/core/filters.ts"
 import { describeState, state, type PullFacts } from "../src/core/state.ts"
 
 const HEAD = "a".repeat(40)
@@ -73,6 +73,19 @@ describe("filters", () => {
     expect(passes(["!**/secret"], "a\nb/secret")).toBe(false)
     expect(passes(["!docs/?"], "docs/\n")).toBe(false)
   })
+
+  it("pass labels when none is excluded and, with an include pattern, one matches, without case", () => {
+    expect(labelsMiss(undefined, [])).toBeNull()
+    expect(labelsMiss(["!wip"], [])).toBeNull()
+    expect(labelsMiss(["!wip"], ["docs", "WIP"])).toBe("WIP")
+    expect(labelsMiss(["safe"], [])).toBe("")
+    expect(labelsMiss(["safe"], ["docs"])).toBe("")
+    expect(labelsMiss(["safe", "!wip"], ["docs", "safe"])).toBeNull()
+    expect(labelsMiss(["safe", "!wip"], ["safe", "wip"])).toBe("wip")
+    expect(labelsMiss(["area/*", "!area/legal"], ["area/legal"])).toBe("area/legal")
+    expect(labelsMiss(["!area/*", "area/docs"], ["area/docs"])).toBeNull()
+    for (const patterns of [["!wip"], ["safe"], ["safe", "!wip"], ["!area/*", "area/docs"]]) for (const label of ["wip", "safe", "area/docs", "x"]) expect(labelsMiss(patterns, [label]) === null).toBe(passes(patterns, label))
+  })
 })
 
 describe("policy", () => {
@@ -81,6 +94,20 @@ describe("policy", () => {
     expect(() => parsePolicy(JSON.stringify({ merge: { risk: "low", filter: { paths: ["!x"] } } }))).toThrow()
     expect(() => parsePolicy("{")).toThrow()
     expect(parsePolicy(JSON.stringify({ $schema: "s", merge: { risk: "low", filters: { authors: ["g4f4r0"] } }, rules: ["r"] })).merge?.risk).toBe("low")
+  })
+
+  it("defaults review to both passes, no drafts, no max and no filters", () => {
+    expect(reviewPolicy({})).toEqual({ code: true, security: true, drafts: false })
+    expect(reviewPolicy(parsePolicy(JSON.stringify({ review: { security: false, max: 20 } })))).toEqual({ code: true, security: false, drafts: false, max: 20 })
+    expect(parsePolicy(JSON.stringify({ review: { filters: { labels: ["!no-review"] } }, merge: { risk: "low", filters: { labels: ["!wip"] } } })).merge?.filters?.labels).toEqual(["!wip"])
+  })
+
+  it("rejects merge with both passes off, a max that isn't a positive integer, and unknown review keys", () => {
+    expect(parsePolicy(JSON.stringify({ review: { code: false, security: false } })).review).toMatchObject({ code: false, security: false })
+    expect(() => parsePolicy(JSON.stringify({ review: { code: false, security: false }, merge: { risk: "low" } }))).toThrow("tug.json: merge needs review.code or review.security")
+    expect(parsePolicy(JSON.stringify({ review: { code: false }, merge: { risk: "low" } })).review?.security).toBe(true)
+    for (const max of [0, -1, 1.5, "20"]) expect(() => parsePolicy(JSON.stringify({ review: { max } }))).toThrow()
+    expect(() => parsePolicy(JSON.stringify({ review: { draft: true } }))).toThrow()
   })
 })
 
@@ -107,6 +134,10 @@ describe("decide", () => {
   it("holds when a filter fails, checking every changed file", () => {
     expect(run({ facts: { author: "someone" } })).toMatchObject({ action: "hold", reason: "The author someone is not in merge.filters.authors." })
     expect(run({ facts: { base: "master" } }).action).toBe("hold")
+    const labels: Policy = { merge: { risk: "low", filters: { labels: ["safe", "!wip"] } } }
+    expect(run({ policy: labels, facts: { labels: ["safe"] } }).action).toBe("merge")
+    expect(run({ policy: labels, facts: { labels: ["safe", "wip"] } })).toMatchObject({ action: "hold", reason: "The label wip is excluded by merge.filters.labels." })
+    expect(run({ policy: labels })).toMatchObject({ action: "hold", reason: "No label is in merge.filters.labels." })
     expect(run({ files: ["README.md", "locales/en.json"] })).toMatchObject({ action: "hold", reason: "locales/en.json not in merge.filters.paths." })
     expect(run({ files: [] }).action).toBe("hold")
     expect(run({ files: ["README.md", ".github/workflows/x.yml"] })).toMatchObject({ action: "hold", reason: ".github/workflows/x.yml changes the repository's GitHub configuration." })

@@ -1,5 +1,5 @@
 import { riskRank, type Policy, type PullState, type Review } from "../contracts.ts"
-import { passes } from "./filters.ts"
+import { labelsMiss, passes } from "./filters.ts"
 import { describeState } from "./state.ts"
 
 /**
@@ -26,6 +26,8 @@ export function decide(input: { state: PullState; review: Review | null; policy:
   const filters = merge.filters ?? {}
   if (!passes(filters.authors, state.author, { caseless: true })) return { action: "hold", reason: `The author ${state.author} is not in merge.filters.authors.` }
   if (!passes(filters.branches, state.base)) return { action: "hold", reason: `The base branch ${state.base} is not in merge.filters.branches.` }
+  const label = labelsMiss(filters.labels, state.labels)
+  if (label !== null) return { action: "hold", reason: label ? `The label ${label} is excluded by merge.filters.labels.` : "No label is in merge.filters.labels." }
   if (files.length === 0) return { action: "hold", reason: "No changed files were read." }
   // A pull request's own workflows run with a token that posts as the same bot, so one that changes them could forge a review.
   const workflows = files.filter((file) => file.startsWith(".github/"))

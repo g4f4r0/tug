@@ -41,11 +41,17 @@ forge adapter:  GitHub; later GitLab, Forgejo
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/hellogafaro/tug/main/schema.json",
+  "review": {
+    "security": true,
+    "max": 20,
+    "filters": { "labels": ["!no-review"], "paths": ["!**/*.lock"] }
+  },
   "merge": {
     "risk": "low",
     "filters": {
       "authors": ["octocat"],
       "branches": ["!master"],
+      "labels": ["!wip"],
       "paths": ["!config/settings_data.json", "!locales/**"]
     }
   },
@@ -58,15 +64,22 @@ forge adapter:  GitHub; later GitLab, Forgejo
 
 1. The file lives at the root, not in `.github/`, so it isn't tied to one forge.
 2. If the file is missing, or has no `merge`, Tug only reviews and never merges.
-3. Code enforces `merge`:
+3. Code enforces `review`, whose fields are all optional:
+   - `code` and `security` turn each pass on or off (default on). With one off, only the other runs, and the review, its label and its failing check come from that pass alone. Both off means no review, and with `merge` the file is an error, since nothing could merge.
+   - `drafts` reviews draft PRs too (default off).
+   - `max` is the most Tug reviews per PR, counted from Tug's own review markers. At the limit, Tug adds `needs:human` and one comment.
+   - `filters` decide which PRs get a review; `paths` decides which files' patches the model sees.
+   - When Tug doesn't review (both off, a draft, a filter, no file left, `max` reached), the job prints `skipped: <reason>`, exits 0 and gives the merge no review, so it holds or waits.
+4. Code enforces `merge`:
    - `risk` is the highest risk that merges by itself.
-   - `filters` work like GitHub Actions' branch and path filters: globs, `!` to exclude, last match wins, and a list of only `!` entries means "everything except".
+   - `filters` work like GitHub Actions' branch and path filters: globs, `!` to exclude, last match wins, and a list of only `!` entries means "everything except". `review.filters` has the same keys and rules.
    - `authors` lists who may be auto-merged.
    - `branches` is the PR's base branch.
+   - `labels` passes when no label's last match is a `!` pattern and, if the list has include patterns, one label matches one. For a single label it is the same as `branches`. Labels match without case.
    - `paths` must pass for every changed file, not just one.
-4. The AI reads `rules` on top of Tug's defaults, the prompts in `prompts/`.
-5. Model settings are never in the file.
-6. Tug reads the file from the base branch, so a PR can't loosen its own review or merge.
+5. The AI reads `rules` on top of Tug's defaults, the prompts in `prompts/`.
+6. Model settings are never in the file.
+7. Tug reads the file from the base branch, so a PR can't loosen its own review or merge.
 
 ## How a PR flows (GitHub)
 
@@ -87,11 +100,11 @@ jobs:
       review: ${{ needs.review.outputs.review }}
 ```
 
-1. Triggers: `pull_request` with `opened`, `synchronize`, `reopened` and `ready_for_review`. Label changes start nothing: a person who removes `merge:hold` or `needs:human` merges by hand. Use `concurrency` per PR with `cancel-in-progress`. Skip drafts.
-2. `review` runs alongside the tests. It runs the code and security kinds in parallel and posts one COMMENT review with inline comments. It sets `risk:low|medium|high` and fails on a new high finding; a critical or high security finding counts as high. On a re-review it skips findings already raised and never lowers the risk.
+1. Triggers: `pull_request` with `opened`, `synchronize`, `reopened` and `ready_for_review`. Label changes start nothing: a person who removes `merge:hold` or `needs:human` merges by hand. Use `concurrency` per PR with `cancel-in-progress`. Skip drafts unless `review.drafts` is on; the merge job always skips them.
+2. `review` runs alongside the tests. It runs the code and security kinds that `tug.json` turns on in parallel and posts one COMMENT review with inline comments. It sets `risk:low|medium|high` and fails on a new high finding; a critical or high security finding counts as high. On a re-review it skips findings already raised and never lowers the risk.
 3. `merge` runs only after `test` and `review` pass. It reads `tug.json`, requires `tug pr state` to be READY and the filters to pass, and requires the review of the same run, passed as `review.yml`'s output, to have said merge. It never reads the review from the PR, because any workflow's token posts as the same bot. It never merges a PR that changes `.github/`: that PR's own workflows run with a token that posts as the same bot, so they could forge the review. Then it squash-merges through the API on that exact SHA, reads the PR back and deletes the merged branch. Otherwise it adds `needs:human` and a comment.
 4. CI belongs to the forge. Tug doesn't run CI commands itself. When a repo has no workflow of its own, `tug init` writes a test job from `package.json` (`typecheck`, `lint`, `test`, with the lockfile's package manager) next to the Tug jobs, into `.github/workflows/tug.yml` in the working directory.
-5. Labels: `risk:*`, `needs:human`, and `merge:hold` (set by a person). There are no `review:*` or `security:*` labels; the checks show the result. Gates read checks, never labels.
+5. Labels: `risk:*`, `needs:human`, and `merge:hold` (set by a person). There are no `review:*` or `security:*` labels; the checks show the result. Gates read checks, never `risk:*` labels.
 6. Known limits:
    - The merge job only waits for jobs in its own workflow. Checks from other workflows read as PENDING, so it doesn't merge.
    - A merge done with `GITHUB_TOKEN` starts no other workflows.
