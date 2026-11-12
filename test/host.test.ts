@@ -36,13 +36,13 @@ const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'
 
 describe("tug install and update", () => {
   it("fetches the commit, sends only TUG_ settings as stdin, then installs", async () => {
-    const { run, calls } = fakeRun({ infisical: "TUG_APP_ID=1\nOTHER=secret\nTUG_MODEL_KEY=k=\nPATH=/bin\n" })
+    const { run, calls } = fakeRun({ infisical: "TUG_APP_ID=1\nOTHER=secret\nTUG_OPENAI_API_KEY=k=\nPATH=/bin\n" })
     const result = await cli(["install", "--host", "box", "--project", "p1", "--env", "prod"], { run, request: commits(SHA) })
     expect(result.code).toBe(0)
     expect(calls).toEqual([
       { cmd: "infisical", args: ["export", "--projectId", "p1", "--env", "prod", "--format", "dotenv", "--silent"], input: undefined },
       { ...ssh(FETCH), input: undefined },
-      ssh(SETTINGS, "TUG_APP_ID=1\nTUG_MODEL_KEY=k=\n"),
+      ssh(SETTINGS, "TUG_APP_ID=1\nTUG_OPENAI_API_KEY=k=\n"),
       { ...ssh(INSTALL), input: undefined },
     ])
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "main" })

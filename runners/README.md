@@ -17,9 +17,10 @@ Containers run as a non-root user with no capabilities and `no-new-privileges`, 
 on the Docker network `tug`. `egress.nft` lets that network reach the internet and the key service, but not the rest of
 the host, its tailnet, or private networks. Neither service starts without these rules.
 
-The key service (`tug-keys`, `tug keys` on `172.30.99.1:8787`) holds the model settings. It forwards a model call only
-when the request carries GitHub's OIDC token for Tug's own `review.yml` on a repository of `TUG_ACCOUNTS`, and sets
-the real key, model and reasoning effort of each pass itself.
+The key service (`tug-keys`, `tug keys` on `172.30.99.1:8787`) holds the model settings. A review job asks it for one
+pass, `code` or `security`, with its prompts and schema. It answers only when the request carries GitHub's OIDC token
+for Tug's own `review.yml` on a repository of `TUG_ACCOUNTS`, and it calls that pass's provider with its own key, model
+and reasoning effort. The job never learns which provider answered.
 
 ```sh
 sudo runners/install.sh <user> [<infisical-project-id> <infisical-env>]
@@ -44,16 +45,18 @@ tug remove --host <ssh-host> [--yes]
 3. `status` prints the services, the installed commit and the running jobs as JSON, and exits 1 unless the runner and key services are active.
 4. `remove` asks you to type the host's name. Without a terminal it needs `--yes`.
 
-That host needs Debian with Docker, Node 24, nftables and curl, and passwordless `sudo` for the SSH user. Point
-`TUG_MODEL_URL` at an address it can reach, such as the model API's address on your tailnet.
+That host needs Debian with Docker, Node 24, nftables and curl, and passwordless `sudo` for the SSH user. A base URL
+must be an address it can reach, such as a proxy's address on your tailnet.
 
 | Setting | |
 | --- | --- |
 | `TUG_APP_ID`, `TUG_APP_PRIVATE_KEY` | The GitHub App the runners sign in as. A key pasted without its line breaks works too. |
 | `TUG_ACCOUNTS` | GitHub accounts to serve, users or organizations, such as `my-user,my-org`. An installation anywhere else is ignored. |
-| `TUG_MODEL_URL`, `TUG_MODEL_KEY` | Any OpenAI-compatible API and its key. |
-| `TUG_REVIEW_MODEL` | The code review's model, optionally with its reasoning effort, such as `gpt-6.1-sol:high`. |
-| `TUG_SECURITY_MODEL` | Optional: the security pass's model, the same way. Default: the review model. |
+| `TUG_REVIEW_MODEL` | The code review's provider and model, `openai/<model>` or `anthropic/<model>`, such as `openai/gpt-6.1-sol`. |
+| `TUG_REVIEW_REASONING_EFFORT` | Optional: its reasoning effort, such as `high`. Default: the provider's. |
+| `TUG_SECURITY_MODEL`, `TUG_SECURITY_REASONING_EFFORT` | Optional: the security pass's model and effort. Each defaults to the review's. |
+| `TUG_OPENAI_API_KEY`, `TUG_ANTHROPIC_API_KEY` | The key of each provider a pass uses. |
+| `TUG_OPENAI_BASE_URL`, `TUG_ANTHROPIC_BASE_URL` | Optional: each provider's API, such as an OpenAI- or Anthropic-compatible proxy. Default: `https://api.openai.com/v1` and `https://api.anthropic.com`. |
 | `TUG_MAX_RUNNERS` | Optional: jobs at once, across all accounts. Default 4. |
 
 Create the app from

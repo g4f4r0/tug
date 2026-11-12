@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 const SCRIPTS = ["typecheck", "lint", "test"] as const
+/** The model settings review.yml takes. */
+const SECRETS = ["TUG_OPENAI_API_KEY", "TUG_OPENAI_BASE_URL", "TUG_ANTHROPIC_API_KEY", "TUG_ANTHROPIC_BASE_URL", "TUG_REVIEW_MODEL", "TUG_REVIEW_REASONING_EFFORT", "TUG_SECURITY_MODEL", "TUG_SECURITY_REASONING_EFFORT"]
 
 export interface InitOptions {
   /** Adds the merge job and a `tug.json` that merges low-risk pull requests by itself. */
@@ -86,7 +88,7 @@ export function init(dir: string, options: InitOptions): InitResult {
     `      runs-on: '${runsOn}'`,
     // Only Tug's own secrets, never all of them. Without them, on runners with a Tug key service, none is needed.
     "    secrets:",
-    ...["TUG_MODEL_URL", "TUG_MODEL_KEY", "TUG_REVIEW_MODEL", "TUG_SECURITY_MODEL"].map((name) => `      ${name}: \${{ secrets.${name} }}`),
+    ...SECRETS.map((name) => `      ${name}: \${{ secrets.${name} }}`),
     "    permissions:",
     "      contents: read",
     "      pull-requests: write",

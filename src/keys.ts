@@ -1,17 +1,15 @@
 import { createPublicKey, verify, type JsonWebKey } from "node:crypto"
 import { createServer, type IncomingMessage, type Server } from "node:http"
-import { KEYS_AUDIENCE, parseModel, type Pass } from "./engine.ts"
+import { z } from "zod"
+import { callProvider, KEYS_AUDIENCE, PASSES, providerSettings, type ModelSettings, type Pass } from "./engine.ts"
 
 const ISSUER = "https://token.actions.githubusercontent.com"
 /** The only workflow that may call: Tug's own review, from its main branch. */
 const REVIEW_WORKFLOW = "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
 
 export interface KeysConfig {
-  /** The real model API, such as http://127.0.0.1:8317/v1. */
-  upstream: string
-  key: string
-  /** Each pass's model and effort. */
-  models: Record<Pass, { model: string; reasoningEffort?: string }>
+  /** Each pass's provider, model, effort and key. */
+  models: Record<Pass, ModelSettings>
   /** Accounts whose repositories' jobs may call, such as g4f4r0. */
   owners: string[]
   /** Workflows that may call, as `job_workflow_ref`, such as hellogafaro/tug/.github/workflows/review.yml@refs/heads/main. */
@@ -59,11 +57,14 @@ const readBody = (request: IncomingMessage, limit: number) =>
     request.on("error", reject)
   })
 
+/** What a job asks: the pass, and the question for its model. */
+const AskBody = z.strictObject({ pass: z.enum(PASSES), system: z.string(), user: z.string(), schema: z.record(z.string(), z.unknown()), name: z.string() })
+
 /**
- * Serves `POST /v1/chat/completions` for GitHub Actions jobs that prove, with their OIDC token, that they run one of
- * the allowed workflows for an allowed owner. It replaces the token with the real key and sets the model and effort of
- * the pass the request names as its model (`code` or `security`), so no runner ever holds them or picks another model.
- * Everything else is refused.
+ * Serves `POST /v1/ask` for GitHub Actions jobs that prove, with their OIDC token, that they run one of the allowed
+ * workflows for an allowed owner. It calls the provider of the pass the request names (`code` or `security`) with its
+ * own key, model and effort, so no runner ever holds them or picks another model, and returns the model's JSON text
+ * as `content`. Everything else is refused.
  */
 export function keysServer(config: KeysConfig, options: { request?: typeof fetch; log?: (line: string) => void } = {}): Server {
   const request = options.request ?? fetch
@@ -77,12 +78,13 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
     return cache.jwks
   }
   return createServer(async (incoming, outgoing) => {
-    const fail = (status: number, message: string) => {
+    const reply = (status: number, body: unknown) => {
       outgoing.writeHead(status, { "content-type": "application/json" })
-      outgoing.end(JSON.stringify({ error: { message } }))
+      outgoing.end(JSON.stringify(body))
     }
+    const fail = (status: number, message: string) => reply(status, { error: { message } })
     try {
-      if (incoming.method !== "POST" || incoming.url !== "/v1/chat/completions") return fail(404, "not found")
+      if (incoming.method !== "POST" || incoming.url !== "/v1/ask") return fail(404, "not found")
       const token = /^Bearer (.+)$/u.exec(incoming.headers.authorization ?? "")?.[1]
       if (!token) return fail(401, "no token")
       let claims: Claims
@@ -92,20 +94,24 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
         log(`refused: ${(error as Error).message}`)
         return fail(403, "refused")
       }
-      const body = JSON.parse((await readBody(incoming, 8_000_000)).toString("utf8")) as Record<string, unknown>
-      const chosen = config.models[body.model === "security" ? "security" : "code"]
-      body.model = chosen.model
-      if (chosen.reasoningEffort) body.reasoning_effort = chosen.reasoningEffort
-      else delete body.reasoning_effort
-      const upstream = await request(`${config.upstream.replace(/\/$/u, "")}/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${config.key}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(900_000),
-      })
-      log(`${String(claims.repository)} ${String(claims.job_workflow_ref).replace(/^.*\/workflows\//u, "")} run ${String(claims.run_id)}: ${upstream.status}`)
-      outgoing.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" })
-      outgoing.end(Buffer.from(await upstream.arrayBuffer()))
+      const text = (await readBody(incoming, 8_000_000)).toString("utf8")
+      let body: z.infer<typeof AskBody>
+      try {
+        body = AskBody.parse(JSON.parse(text))
+      } catch {
+        return fail(400, "expected { pass: code or security, system, user, schema, name }")
+      }
+      const caller = `${String(claims.repository)} ${String(claims.job_workflow_ref).replace(/^.*\/workflows\//u, "")} run ${String(claims.run_id)} ${body.pass}`
+      const { pass, ...question } = body
+      let content: string
+      try {
+        content = await callProvider(config.models[pass], question, request)
+      } catch (error) {
+        log(`${caller}: ${(error as Error).message}`)
+        return fail(502, (error as Error).message)
+      }
+      log(`${caller}: ok`)
+      reply(200, { content })
     } catch (error) {
       log(`error: ${(error as Error).message}`)
       if (!outgoing.headersSent) fail(502, "upstream failed")
@@ -113,16 +119,12 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
   })
 }
 
-/** The key service's settings from its environment, named as in `modelSettings`, plus `TUG_ACCOUNTS`. */
+/** The key service's settings from its environment, named as in `providerSettings`, plus `TUG_ACCOUNTS`. */
 export function keysConfig(env: NodeJS.ProcessEnv = process.env): KeysConfig {
-  const missing = ["TUG_MODEL_URL", "TUG_MODEL_KEY", "TUG_REVIEW_MODEL", "TUG_ACCOUNTS"].filter((name) => !env[name])
-  if (missing.length > 0) throw new Error(`Set ${missing.join(", ")}`)
-  const review = parseModel(env.TUG_REVIEW_MODEL!)
+  if (!env.TUG_ACCOUNTS) throw new Error("Set TUG_ACCOUNTS")
   return {
-    upstream: env.TUG_MODEL_URL!,
-    key: env.TUG_MODEL_KEY!,
-    models: { code: review, security: env.TUG_SECURITY_MODEL ? parseModel(env.TUG_SECURITY_MODEL) : review },
-    owners: env.TUG_ACCOUNTS!.split(/[\s,]+/u).filter(Boolean),
+    models: providerSettings(env),
+    owners: env.TUG_ACCOUNTS.split(/[\s,]+/u).filter(Boolean),
     workflows: [REVIEW_WORKFLOW],
   }
 }
