@@ -174,10 +174,27 @@ func (c *config) appJWT() (string, error) {
 // apiBase is GitHub's REST API; tests point it at a fake.
 var apiBase = "https://api.github.com"
 
-// docker runs Docker's CLI and returns its output. The command gets only PATH, HOME and env, so none of this service's
-// secrets reach it. Tests replace it.
-var docker = func(env []string, args ...string) ([]byte, error) {
-	cmd := exec.Command("docker", args...)
+// dockerBin is Docker's CLI; a test points it at a script.
+var dockerBin = "docker"
+
+// dockerTimeout bounds every Docker command but wait, which lasts as long as its job. pull and run, which may download
+// the runner image, get five times as long.
+var dockerTimeout = 2 * time.Minute
+
+// runDocker runs Docker's CLI and returns its output. The command gets only PATH, HOME and env, so none of this
+// service's secrets reach it.
+func runDocker(env []string, args ...string) ([]byte, error) {
+	ctx := context.Background()
+	if args[0] != "wait" {
+		limit := dockerTimeout
+		if args[0] == "pull" || args[0] == "run" {
+			limit *= 5
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, limit)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, dockerBin, args...)
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}, env...)
 	out, err := cmd.Output()
 	var exit *exec.ExitError
@@ -186,6 +203,9 @@ var docker = func(env []string, args ...string) ([]byte, error) {
 	}
 	return out, err
 }
+
+// docker is runDocker; tests replace it.
+var docker = runDocker
 
 func githubAPI(ctx context.Context, method, path, bearer string, into any) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -569,7 +589,8 @@ func (p *pool) adopt() {
 		if !ok {
 			continue
 		}
-		logs, _ := docker(nil, "logs", name)
+		// The runner prints a handful of lines before "Running job", and nothing more until the job ends.
+		logs, _ := docker(nil, "logs", "--tail", "100", name)
 		if !strings.Contains(string(logs), "Running job") {
 			_, _ = docker(nil, "rm", "-f", name)
 			continue
