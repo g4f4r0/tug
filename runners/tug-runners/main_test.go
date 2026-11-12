@@ -329,6 +329,7 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	}
 	page2 := []repo{{"g4f4r0/second", true, false}}
 	gone := map[string]bool{}
+	failing := false
 	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer ghp_x" {
@@ -341,6 +342,8 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 		switch {
 		case gone[path]:
 			http.NotFound(w, r)
+		case failing && path == "/user/repos" && query.Get("page") == "2":
+			http.Error(w, "Server Error", http.StatusInternalServerError)
 		case path == "/user":
 			_ = json.NewEncoder(w).Encode(map[string]string{"login": "G4F4R0"})
 		case path == "/user/repos" && (query.Get("affiliation") != "owner" || query.Get("visibility") != "private"):
@@ -407,6 +410,14 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	mu.Unlock()
 	if want, got := []string{"https://github.com/g4f4r0/private"}, urls(); !slices.Equal(got, want) {
 		t.Fatalf("want %v, got %v", want, got)
+	}
+
+	// GitHub failing partway fails the round, rather than serving a partial list.
+	mu.Lock()
+	failing = true
+	mu.Unlock()
+	if _, err := c.discover(context.Background()); err == nil || refused(err) {
+		t.Fatalf("want a failed round, got %v", err)
 	}
 
 	// A token GitHub refuses finds nothing to serve, so the current scopes stay until the next round.

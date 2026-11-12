@@ -212,7 +212,8 @@ func (c *config) checkToken(ctx context.Context) {
 }
 
 // discover lists the scopes to serve: each organization in TUG_ACCOUNTS whose runners the token can manage, and the
-// token user's own private repositories when that user is listed.
+// token user's own private repositories when that user is listed. GitHub refusing an account skips it; any other
+// failure fails the round, so the scopes already served stay served.
 func (c *config) discover(ctx context.Context) ([]scope, error) {
 	var user struct {
 		Login string `json:"login"`
@@ -230,8 +231,8 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 					Archived bool   `json:"archived"`
 				}
 				if _, err := githubAPI(ctx, fmt.Sprintf("/user/repos?affiliation=owner&visibility=private&per_page=100&page=%d", page), c.token, &repos); err != nil {
-					slog.Error("Could not list repositories", "account", user.Login, "error", err)
-					break
+					// A partial list would stop serving the repositories it missed.
+					return nil, fmt.Errorf("list %s's repositories: %w", user.Login, err)
 				}
 				for _, repo := range repos {
 					// Never public: anyone can open a pull request there, and its code would run here.
@@ -250,7 +251,10 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 			Type  string `json:"type"`
 		}
 		if _, err := githubAPI(ctx, "/users/"+owner, c.token, &account); err != nil {
-			slog.Error("Could not read an account", "account", owner, "error", err)
+			if !refused(err) {
+				return nil, err
+			}
+			slog.Error("Skipping an account GitHub doesn't show", "account", owner, "error", err)
 			continue
 		}
 		if account.Type != "Organization" {
@@ -261,11 +265,10 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 			AllowsPublic bool `json:"allows_public_repositories"`
 		}
 		if _, err := githubAPI(ctx, fmt.Sprintf("/orgs/%s/actions/runner-groups/%d", account.Login, defaultRunnerGroup), c.token, &group); err != nil {
-			if refused(err) {
-				slog.Error("Skipping an organization whose runners the token can't manage: it needs an owner's token with admin:org", "account", account.Login, "error", err)
-			} else {
-				slog.Error("Could not read the Default runner group", "account", account.Login, "error", err)
+			if !refused(err) {
+				return nil, err
 			}
+			slog.Error("Skipping an organization whose runners the token can't manage: it needs an owner's token with admin:org", "account", account.Login, "error", err)
 			continue
 		}
 		if group.AllowsPublic {
