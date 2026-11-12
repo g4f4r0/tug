@@ -38,6 +38,8 @@ export async function watch(input: {
   intervalMs: number
   timeoutMs: number
   settleMs?: number
+  /** READY stays quiet too, so the watch ends on MERGED, CLOSED, HELD or a new blocker. */
+  untilMerged?: boolean
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }): Promise<WatchResult> {
@@ -59,7 +61,9 @@ export async function watch(input: {
     try {
       last = await input.read()
       failures = 0
-      if (settled(last) && last.state !== "PENDING") return { state: last, exit: exitCode(last.state), timedOut: false }
+      const name = last.state
+      const quiet = name === "PENDING" || (input.untilMerged === true && name === "READY")
+      if (settled(last) && !quiet) return { state: last, exit: exitCode(name), timedOut: false }
     } catch (error) {
       failures++
       if (failures >= MAX_FAILURES) throw error
