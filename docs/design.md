@@ -85,7 +85,10 @@ jobs:
   test: { ... }                      # the repo's own CI, unchanged
   review:
     uses: hellogafaro/tug/.github/workflows/review.yml@v1
-    secrets: inherit
+    secrets:                         # only Tug's own, never `inherit`
+      TUG_MODEL_URL: ${{ secrets.TUG_MODEL_URL }}
+      TUG_MODEL_KEY: ${{ secrets.TUG_MODEL_KEY }}
+      TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}
   merge:
     needs: [test, review]
     uses: hellogafaro/tug/.github/workflows/merge.yml@v1

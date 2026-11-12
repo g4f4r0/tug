@@ -37,7 +37,8 @@ function testSteps(dir: string): { name: string; steps: string[] } | null {
   if (run.length === 0) return null
   const name = `test / ${run.join(", ")}`
   const steps = (install: string[], runner: string) => ({ name, steps: [...install, ...run.map((script) => `      - run: ${runner} ${script}`)] })
-  const node = ["      - uses: actions/setup-node@v5", "        with:", "          node-version: 24"]
+  // No package manager cache: setup-node would need the package manager installed first, and runners are single-use.
+  const node = ["      - uses: actions/setup-node@v5", "        with:", "          node-version: 24", "          package-manager-cache: false"]
   if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb")))
     return steps([...node, "      - uses: oven-sh/setup-bun@v2", "      - run: bun install --frozen-lockfile"], "bun run")
   if (existsSync(join(dir, "pnpm-lock.yaml")))
@@ -83,7 +84,9 @@ export function init(dir: string, options: InitOptions): InitResult {
     "    uses: hellogafaro/tug/.github/workflows/review.yml@main",
     "    with:",
     `      runs-on: '${runsOn}'`,
-    "    secrets: inherit",
+    // Only Tug's own secrets, never all of them. Without them, on runners with a Tug key service, none is needed.
+    "    secrets:",
+    ...["TUG_MODEL_URL", "TUG_MODEL_KEY", "TUG_REVIEW_MODEL", "TUG_SECURITY_MODEL"].map((name) => `      ${name}: \${{ secrets.${name} }}`),
     "    permissions:",
     "      contents: read",
     "      pull-requests: write",
