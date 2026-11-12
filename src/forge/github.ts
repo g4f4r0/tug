@@ -115,11 +115,9 @@ export async function readPull(input: { request: Request; repo: string; number: 
     throw new GitHubError(`${repo}#${number} has more than ${MAX_PAGES * 100} ${key.replace("_", " ")}`)
   }
   const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
-  // A run that `concurrency` cancelled because a newer run of the same check started is superseded, not failed.
-  const newest = new Map<string, number>()
-  for (const run of runs) newest.set(str(run.name), Math.max(newest.get(str(run.name)) ?? 0, Number(run.id) || 0))
+  const superseded = await supersededSuites(request, repo, head)
   const checks = runs
-    .filter((run) => !(run.conclusion === "cancelled" && (Number(run.id) || 0) < (newest.get(str(run.name)) ?? 0)))
+    .filter((run) => !superseded.has(Number((run.check_suite as Json | undefined)?.id)))
     .map((run) => ({
       name: str(run.name),
       status: str(run.status),
@@ -149,6 +147,22 @@ export async function readPull(input: { request: Request; repo: string; number: 
 /** Reads a pull request and names its state. */
 export async function pullState(input: { request: Request; repo: string; number: number; wait?: (ms: number) => Promise<void> } & StateOptions): Promise<PullState> {
   return state(await readPull(input), input)
+}
+
+/**
+ * The check suites of workflow runs that `concurrency` cancelled because a newer run of the same workflow started on
+ * this head: their checks are superseded, not failed. Without `actions: read`, none are, so those checks still fail.
+ */
+async function supersededSuites(request: Request, repo: string, head: string): Promise<Set<number>> {
+  let runs: Json[]
+  try {
+    runs = list((await request<Json>("GET", `/repos/${repo}/actions/runs?head_sha=${head}&per_page=100`)).workflow_runs)
+  } catch {
+    return new Set()
+  }
+  const newest = new Map<number, number>()
+  for (const run of runs) newest.set(Number(run.workflow_id), Math.max(newest.get(Number(run.workflow_id)) ?? 0, Number(run.id)))
+  return new Set(runs.filter((run) => run.conclusion === "cancelled" && Number(run.id) < (newest.get(Number(run.workflow_id)) ?? 0)).map((run) => Number(run.check_suite_id)))
 }
 
 export interface PullFile {

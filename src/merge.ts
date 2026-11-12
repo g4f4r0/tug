@@ -34,11 +34,7 @@ export async function runMerge(input: { request: Request; repo: string; number: 
   if (decision.action === "merge") {
     await request("PUT", `/repos/${repo}/pulls/${number}/merge`, { body: { sha: pull.head, merge_method: "squash", commit_title: `${pull.title} (#${number})` } })
     const after = await readPull({ request, repo, number, wait: input.wait })
-    // Deletes the merged branch, unless an open pull request targets it: deleting a base branch closes its pull requests.
-    const branch = info.head?.ref
-    if (after.merged && branch && info.head?.repo?.full_name === repo && (await request<unknown[]>("GET", `/repos/${repo}/pulls?state=open&base=${encodeURIComponent(branch)}&per_page=1`)).length === 0) {
-      await request("DELETE", `/repos/${repo}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`).catch(() => {})
-    }
+    if (after.merged && info.head?.ref && info.head.repo?.full_name === repo) await deleteBranch(request, repo, info.head.ref, pull.head)
     return { decision, state: pull, merged: after.merged }
   }
   if (decision.action === "hold" && !pull.labels.includes(HUMAN_LABEL)) {
@@ -46,4 +42,19 @@ export async function runMerge(input: { request: Request; repo: string; number: 
     await request("POST", `/repos/${repo}/issues/${number}/comments`, { body: { body: `Tug held ${pull.head.slice(0, 7)} for a person: ${decision.reason}` } })
   }
   return { decision, state: pull, merged: false }
+}
+
+/**
+ * Deletes a merged branch, as `gh pr merge --delete-branch` does. It stays when an open pull request targets it, since
+ * deleting a base branch closes its pull requests, when someone pushed to it since, or when any read fails.
+ */
+async function deleteBranch(request: Request, repo: string, branch: string, merged: string): Promise<void> {
+  const ref = `/repos/${repo}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`
+  try {
+    const targeting = await request<unknown[]>("GET", `/repos/${repo}/pulls?state=open&base=${encodeURIComponent(branch)}&per_page=1`)
+    const current = await request<{ object?: { sha?: string } }>("GET", ref)
+    if (targeting.length === 0 && current.object?.sha === merged) await request("DELETE", ref)
+  } catch {
+    // The merge already happened; a branch left behind is harmless.
+  }
 }

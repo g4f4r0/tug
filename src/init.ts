@@ -84,6 +84,7 @@ export function init(dir: string, options: InitOptions): InitResult {
       `      runs-on: '${runsOn}'`,
       "      review: ${{ needs.review.outputs.review }}",
       "    permissions:",
+      "      actions: read",
       "      checks: read",
       "      statuses: read",
       "      contents: write",

@@ -8,6 +8,7 @@ const REPO = "g4f4r0/opencode-plugins"
 interface StateFacts {
   pulls?: Record<string, unknown>[]
   runs?: Record<string, unknown>[]
+  workflowRuns?: Record<string, unknown>[]
   statuses?: Record<string, unknown>[]
   threads?: boolean[]
   errors?: boolean
@@ -36,6 +37,10 @@ function stateRequest(facts: StateFacts = {}) {
         ...pulls[Math.min(reads++, pulls.length - 1)],
       } as T
     }
+    if (method === "GET" && path.includes("/actions/runs")) {
+      if (!facts.workflowRuns) throw Object.assign(new Error("Resource not accessible by integration"), { status: 403 })
+      return { workflow_runs: facts.workflowRuns } as T
+    }
     if (method === "GET" && path.includes("/check-runs")) return { check_runs: facts.runs ?? [{ name: "build", status: "completed", conclusion: "success" }] } as T
     if (method === "GET" && path.split("?")[0]!.endsWith("/status")) return { statuses: facts.statuses ?? [] } as T
     if (method === "POST" && path === "/graphql") {
@@ -57,10 +62,13 @@ describe("the pull request's state", () => {
     return { state, waits, calls: t.calls }
   }
 
-  it("drops a cancelled run that a newer run of the same check superseded", async () => {
-    const runs = [{ id: 1, name: "test", status: "completed", conclusion: "cancelled" }, { id: 2, name: "test", status: "in_progress", conclusion: null }]
-    expect((await read({ runs })).state).toMatchObject({ state: "PENDING", failed: [], pending: ["test"] })
-    expect((await read({ runs: [runs[0]!] })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
+  it("drops the checks of a workflow run that a newer run of the same workflow superseded", async () => {
+    const runs = [{ name: "test", status: "completed", conclusion: "cancelled", check_suite: { id: 10 } }, { name: "test", status: "in_progress", conclusion: null, check_suite: { id: 20 } }]
+    const workflowRuns = [{ id: 1, workflow_id: 7, conclusion: "cancelled", check_suite_id: 10 }, { id: 2, workflow_id: 7, conclusion: null, check_suite_id: 20 }]
+    expect((await read({ runs, workflowRuns })).state).toMatchObject({ state: "PENDING", failed: [], pending: ["test"] })
+    // Another workflow's cancelled run, or no actions: read, still fails.
+    expect((await read({ runs, workflowRuns: [{ ...workflowRuns[0]!, workflow_id: 8 }, workflowRuns[1]!] })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
+    expect((await read({ runs })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
   })
 
   it("is ready when nothing holds the head back", async () => {
@@ -84,10 +92,11 @@ describe("the pull request's state", () => {
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       `GET /repos/${REPO}/pulls/12`,
       `GET /repos/${REPO}/commits/${HEAD}/check-runs`,
+      `GET /repos/${REPO}/actions/runs`,
       `GET /repos/${REPO}/commits/${HEAD}/status`,
       "POST /graphql",
     ])
-    expect(calls[3]!.body).toMatchObject({ variables: { owner: "g4f4r0", name: "opencode-plugins", number: 12 } })
+    expect(calls[4]!.body).toMatchObject({ variables: { owner: "g4f4r0", name: "opencode-plugins", number: 12 } })
   })
 
   it("ends at merged or closed without reading checks", async () => {

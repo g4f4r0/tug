@@ -171,6 +171,8 @@ describe("merge", () => {
       calls.push(`${method} ${route}`)
       if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD, ref: "docs/typo", repo: { full_name: "g4f4r0/x" } }, base: { ref: "main", sha: "c".repeat(40) } }
       if (route.endsWith("/pulls")) return []
+      if (method === "GET" && route.endsWith("/git/refs/heads/docs/typo")) return { object: { sha: HEAD } }
+      if (route.endsWith("/actions/runs")) return { workflow_runs: [] }
       if (route.endsWith("/check-runs")) return { check_runs: overrides.runs ?? [{ name: "test", status: "completed", conclusion: "success" }, { name: "tug / merge", status: "in_progress", conclusion: null }] }
       if (route.endsWith("/status")) return { statuses: [] }
       if (route === "/graphql") return { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }
