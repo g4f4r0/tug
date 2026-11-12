@@ -1,8 +1,8 @@
 // tug-runners starts one single-use GitHub Actions runner, in Docker on the network tug, for each job queued for the
 // label tug in every account that has the Tug runners GitHub App installed and is listed in TUG_ACCOUNTS. It never
-// runs more than TUG_MAX_RUNNERS at once across all of them, each with an equal share of the host's CPUs and memory. Organizations get one runner scale set each, in their Default
-// runner group, which must not allow public repositories; personal accounts get one per private repository the
-// installation includes. No secret enters a container: it gets only its single-use runner config and TUG_KEYS.
+// runs more than TUG_MAX_RUNNERS at once across all of them, which share three quarters of the host's CPUs and
+// memory. Organizations get one runner scale set each, in their Default runner group, which must not allow public
+// repositories; personal accounts get one per private repository the installation includes. No secret enters a container: it gets only its single-use runner config and TUG_KEYS.
 package main
 
 import (
@@ -103,10 +103,11 @@ func loadConfig() (*config, error) {
 	return c, nil
 }
 
-// share splits the host's CPUs and memory evenly between max containers, as Docker's --cpus and --memory.
+// share splits three quarters of the host's CPUs and memory evenly between max containers, as Docker's --cpus and
+// --memory. The last quarter stays with the host, so full runners never starve what else runs there.
 func share(cpus int, memory int64, containers int) (string, string) {
-	perCPU := max(float64(cpus)/float64(containers), 1)
-	return strconv.FormatFloat(perCPU, 'f', 2, 64), strconv.FormatInt(max(memory/int64(containers), 1<<30), 10)
+	perCPU := max(float64(cpus)*0.75/float64(containers), 1)
+	return strconv.FormatFloat(perCPU, 'f', 2, 64), strconv.FormatInt(max(memory/4*3/int64(containers), 1<<30), 10)
 }
 
 // hostMemory is the host's total memory in bytes, from /proc/meminfo, or 8 GiB when it can't be read.

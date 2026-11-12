@@ -324,8 +324,8 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	}
 }
 
-func TestShareSplitsTheHostEvenly(t *testing.T) {
-	if cpus, memory := share(16, 32<<30, 6); cpus != "2.67" || memory != fmt.Sprint(int64(32<<30)/6) {
+func TestShareSplitsThreeQuartersOfTheHostEvenly(t *testing.T) {
+	if cpus, memory := share(16, 32<<30, 6); cpus != "2.00" || memory != fmt.Sprint(int64(24<<30)/6) {
 		t.Fatalf("got %s CPUs, %s bytes", cpus, memory)
 	}
 	// Never below one CPU and 1 GiB, however many containers.

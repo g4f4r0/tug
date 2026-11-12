@@ -6,7 +6,7 @@ repository's own CI, targets them with `runs-on: tug`.
 One service (`tug-runners`) serves every account that has your GitHub App installed and is listed in `TUG_ACCOUNTS`.
 It registers a runner scale set named `tug` in each organization, and in each private repository of a personal
 account, then waits for jobs. Each queued job gets a fresh container that runs that one job and is deleted, never
-more than `TUG_MAX_RUNNERS` at once across all accounts, each with an equal share of the host's CPUs and memory.
+more than `TUG_MAX_RUNNERS` at once across all accounts, which share three quarters of the host's CPUs and memory.
 Nothing runs while no job waits. Restarting the service leaves
 running jobs alone.
 
