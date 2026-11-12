@@ -33,7 +33,7 @@ const USAGE = `Usage:
 
 tug review posts one review of the head (code and security) and its risk:* label, and fails on a new high finding.
 tug merge merges the head when tug.json allows it, or holds it with needs:human. It reads the review from TUG_REVIEW.
-tug init writes .github/workflows/tug.yml (tests, review, and merge with --merge) and tug.json in this directory.
+tug init writes .github/workflows/tug.yml (tests and review) in this directory; --merge adds the merge job and tug.json.
   --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
 tug install sets up a Debian host over SSH: Docker, nftables, the runners and the key service, with the TUG_* settings of its own environment.
@@ -171,7 +171,7 @@ export async function main(argv: string[], io: Io = { out: (text) => process.std
   }
 }
 
-async function job(command: "review" | "merge", ref: string, io: { out: (text: string) => void; err: (text: string) => void }): Promise<number> {
+async function job(command: "review" | "merge", ref: string, io: Io): Promise<number> {
   let target
   try {
     target = parseRef(ref)
@@ -200,7 +200,7 @@ async function job(command: "review" | "merge", ref: string, io: { out: (text: s
   }
 }
 
-function keys(listen: string, io: { out: (text: string) => void; err: (text: string) => void }): Promise<number> {
+function keys(listen: string, io: Io): Promise<number> {
   const at = /^(.+):(\d+)$/u.exec(listen)
   if (!at) {
     io.err("--listen takes host:port\n")

@@ -7,10 +7,10 @@ const ISSUER = "https://token.actions.githubusercontent.com"
 /** The only workflow that may call: Tug's own review, from its main branch. */
 const REVIEW_WORKFLOW = "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
 
-export interface KeysConfig {
+interface KeysConfig {
   /** Each pass's provider, model, effort and key. */
   models: Record<Pass, ModelSettings>
-  /** Accounts whose repositories' jobs may call, such as g4f4r0. */
+  /** Accounts whose repositories' jobs may call, such as my-org. */
   owners: string[]
   /** Workflows that may call, as `job_workflow_ref`, such as hellogafaro/tug/.github/workflows/review.yml@refs/heads/main. */
   workflows: string[]
@@ -21,14 +21,18 @@ type Jwks = { keys: (JsonWebKey & { kid?: string })[] }
 
 const decode = (part: string): Claims => JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Claims
 
-/** Verifies a GitHub Actions OIDC token and returns its claims, or throws why it is refused. */
-export async function verifyToken(token: string, config: Pick<KeysConfig, "owners" | "workflows">, jwks: () => Promise<Jwks>, now = Date.now()): Promise<Claims> {
+/**
+ * Verifies a GitHub Actions OIDC token and returns its claims, or throws why it is refused. An unknown key ID asks
+ * `jwks` once more with `refresh`, as GitHub may have rotated its keys.
+ */
+export async function verifyToken(token: string, config: Pick<KeysConfig, "owners" | "workflows">, jwks: (refresh?: boolean) => Promise<Jwks>, now = Date.now()): Promise<Claims> {
   const parts = token.split(".")
   if (parts.length !== 3) throw new Error("not a JWT")
   const [head, body, signature] = parts as [string, string, string]
   const header = decode(head)
   if (header.alg !== "RS256") throw new Error(`alg ${String(header.alg)}`)
-  const jwk = (await jwks()).keys.find((key) => key.kid === header.kid)
+  const find = (set: Jwks) => set.keys.find((key) => key.kid === header.kid)
+  const jwk = find(await jwks()) ?? find(await jwks(true))
   if (!jwk) throw new Error("unknown key")
   if (!verify("RSA-SHA256", Buffer.from(`${head}.${body}`), createPublicKey({ key: jwk, format: "jwk" }), Buffer.from(signature, "base64url"))) throw new Error("bad signature")
   const claims = decode(body)
@@ -42,16 +46,16 @@ export async function verifyToken(token: string, config: Pick<KeysConfig, "owner
   return claims
 }
 
+class BodyTooLarge extends Error {}
+
 const readBody = (request: IncomingMessage, limit: number) =>
   new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
     request.on("data", (chunk: Buffer) => {
       size += chunk.length
-      if (size > limit) {
-        reject(new Error("body too large"))
-        request.destroy()
-      } else chunks.push(chunk)
+      if (size > limit) reject(new BodyTooLarge())
+      else chunks.push(chunk)
     })
     request.on("end", () => resolve(Buffer.concat(chunks)))
     request.on("error", reject)
@@ -70,8 +74,9 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
   const request = options.request ?? fetch
   const log = options.log ?? ((line: string) => console.error(line))
   let cache: { at: number; jwks: Jwks } | undefined
-  const jwks = async (): Promise<Jwks> => {
-    if (cache && Date.now() - cache.at < 3_600_000) return cache.jwks
+  // Kept an hour; a refresh, for an unknown key ID, fetches at most once a minute.
+  const jwks = async (refresh = false): Promise<Jwks> => {
+    if (cache && Date.now() - cache.at < (refresh ? 60_000 : 3_600_000)) return cache.jwks
     const response = await request(`${ISSUER}/.well-known/jwks`, { signal: AbortSignal.timeout(10_000) })
     if (!response.ok) throw new Error(`JWKS answered ${response.status}`)
     cache = { at: Date.now(), jwks: (await response.json()) as Jwks }
@@ -94,7 +99,14 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
         log(`refused: ${(error as Error).message}`)
         return fail(403, "refused")
       }
-      const text = (await readBody(incoming, 8_000_000)).toString("utf8")
+      let text: string
+      try {
+        text = (await readBody(incoming, 8_000_000)).toString("utf8")
+      } catch (error) {
+        if (!(error instanceof BodyTooLarge)) throw error
+        outgoing.setHeader("connection", "close")
+        return fail(413, "body too large")
+      }
       let body: z.infer<typeof AskBody>
       try {
         body = AskBody.parse(JSON.parse(text))
@@ -103,9 +115,13 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
       }
       const caller = `${String(claims.repository)} ${String(claims.job_workflow_ref).replace(/^.*\/workflows\//u, "")} run ${String(claims.run_id)} ${body.pass}`
       const { pass, ...question } = body
+      // A job that gives up stops the provider call, so its retry never runs beside it.
+      const gone = new AbortController()
+      outgoing.on("close", () => gone.abort())
+      const call: typeof fetch = (url, init) => request(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, gone.signal]) : gone.signal })
       let content: string
       try {
-        content = await callProvider(config.models[pass], question, request)
+        content = await callProvider(config.models[pass], question, call)
       } catch (error) {
         log(`${caller}: ${(error as Error).message}`)
         return fail(502, (error as Error).message)

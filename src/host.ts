@@ -8,7 +8,7 @@ export type Run = (cmd: string, args: string[], input?: string | Buffer) => { st
 /** Fetches a URL's body; tests replace it so no network is needed. */
 export type Download = (url: string) => Promise<Buffer>
 
-export class HostError extends Error {}
+class HostError extends Error {}
 
 export const spawn: Run = (cmd, args, input) => {
   const result = spawnSync(cmd, args, { input, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
@@ -26,7 +26,7 @@ export const validHost = (host: string): boolean => /^[\w][\w.@-]*$/u.test(host)
 
 const SOURCE = "hellogafaro/tug"
 const SHA = /^[0-9a-f]{40}$/u
-const SERVICES = ["tug-runners", "tug-keys", "tug-prune.timer"]
+const SERVICES = ["tug-runners", "tug-keys", "tug-cleanup.timer"]
 const STATUS = `echo "services $(systemctl is-active ${SERVICES.join(" ")} | tr '\\n' ' ')"; echo "version $(cat /usr/local/lib/tug/VERSION 2>/dev/null)"; echo "running $(docker ps -q --filter label=tug.scope | wc -l)"`
 
 /** The GitHub App's key on one line, its line breaks as spaces, which the runner service puts back. */
@@ -77,7 +77,7 @@ export function settingsFile(env: NodeJS.ProcessEnv): string {
 
 /** Runs a command on the host and returns its output, or throws with what it said. */
 function remote(run: Run, host: string, command: string, input?: string | Buffer): string {
-  const result = run("ssh", ["-o", "BatchMode=yes", host, command], input)
+  const result = run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", host, command], input)
   if (result.status !== 0) throw new HostError(`${host}: ${result.stderr.trim() || result.stdout.trim() || `ssh exited ${result.status}`}`)
   return result.stdout
 }
@@ -97,7 +97,7 @@ export async function deploy(input: { host: string; ref: string; request: Reques
   return { host, version: sha, ref }
 }
 
-export interface HostStatus {
+interface HostStatus {
   host: string
   version: string | null
   services: Record<string, string>

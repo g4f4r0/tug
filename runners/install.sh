@@ -13,12 +13,12 @@ grep -Eqx 'ID="?debian"?' /etc/os-release 2>/dev/null || { echo "Tug's runners n
 here=$(cd "$(dirname "$0")" && pwd)
 
 if [[ ${1:-} == --uninstall ]]; then
-  systemctl disable --now tug-runners.service tug-keys.service tug-prune.timer 2>/dev/null || true
+  systemctl disable --now tug-runners.service tug-keys.service tug-cleanup.timer 2>/dev/null || true
   docker rm -f tug-keys >/dev/null 2>&1 || true
   docker ps -q --filter label=tug.scope | xargs -r docker rm -f >/dev/null
   docker network rm tug >/dev/null 2>&1 || true
   nft delete table inet tug_egress 2>/dev/null || true
-  rm -rf /usr/local/lib/tug /etc/systemd/system/tug-{runners,keys,prune}.service /etc/systemd/system/tug-prune.timer
+  rm -rf /usr/local/lib/tug /etc/systemd/system/tug-{runners,keys,cleanup}.service /etc/systemd/system/tug-cleanup.timer
   systemctl daemon-reload
   echo "Uninstalled. /etc/tug/tug.env is kept."
   exit 0
@@ -43,6 +43,7 @@ docker network inspect tug >/dev/null 2>&1 ||
 install -d -m 0755 /usr/local/lib/tug /etc/tug
 [[ ! -e "$here/../VERSION" ]] || install -m 0644 "$here/../VERSION" /usr/local/lib/tug/VERSION
 build=$(mktemp -d)
+trap 'rm -rf "$build"' EXIT
 # The key service: Tug's source, which Node runs as is, with its runtime dependency installed in Node's own image, so
 # the host needs no Node.
 mkdir "$build/app"
@@ -55,13 +56,12 @@ cp -r "$build/app" /usr/local/lib/tug/app
 docker run --rm -v "$here/tug-runners:/src:ro" -v "$build:/out" -w /src -e CGO_ENABLED=0 golang:1.27 \
   go build -trimpath -ldflags=-s -o /out/tug-runners . >&2
 install -m 0755 "$build/tug-runners" /usr/local/lib/tug/tug-runners
-rm -rf "$build"
 
 install -m 0644 "$here/egress.nft" /usr/local/lib/tug/egress.nft
 for unit in tug-runners tug-keys; do
   sed -e "s|@USER@|$user|" "$here/$unit.service" >"/etc/systemd/system/$unit.service"
 done
-install -m 0644 "$here/tug-prune.service" "$here/tug-prune.timer" /etc/systemd/system/
+install -m 0644 "$here/tug-cleanup.service" "$here/tug-cleanup.timer" /etc/systemd/system/
 [[ -e /etc/tug/tug.env ]] || install -m 0600 /dev/null /etc/tug/tug.env
 
 systemctl daemon-reload
@@ -72,5 +72,5 @@ for unit in tug-keys tug-runners; do
   systemctl enable "$unit.service"
   systemctl restart "$unit.service"
 done
-systemctl enable --now tug-prune.timer
+systemctl enable --now tug-cleanup.timer
 echo "Installed: the runner service and the key service on 172.30.99.1:8787. Logs: journalctl -u tug-runners"

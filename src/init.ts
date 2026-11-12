@@ -5,14 +5,14 @@ const SCRIPTS = ["typecheck", "lint", "test"] as const
 /** The model settings review.yml takes. */
 const SECRETS = ["TUG_OPENAI_API_KEY", "TUG_OPENAI_BASE_URL", "TUG_ANTHROPIC_API_KEY", "TUG_ANTHROPIC_BASE_URL", "TUG_REVIEW_MODEL", "TUG_REVIEW_REASONING_EFFORT", "TUG_SECURITY_MODEL", "TUG_SECURITY_REASONING_EFFORT"]
 
-export interface InitOptions {
+interface InitOptions {
   /** Adds the merge job and a `tug.json` that merges low-risk pull requests by itself. */
   merge: boolean
   /** Runner labels, such as ["tug"]. */
   runsOn: string[]
 }
 
-export interface InitResult {
+interface InitResult {
   files: { path: string; content: string }[]
   notes: string[]
 }

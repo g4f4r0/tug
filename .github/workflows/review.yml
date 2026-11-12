@@ -33,7 +33,7 @@ jobs:
     # A fork's pull request gets no secrets, OIDC token or write token, so Tug skips it and a person handles it.
     if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     outputs:
       review: ${{ steps.review.outputs.review }}
     permissions:
@@ -49,7 +49,7 @@ jobs:
       - name: Get Tug
         run: |
           mkdir "$RUNNER_TEMP/tug"
-          curl -fsSL https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
+          curl -fsSL --retry 3 https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
           npm ci --prefix "$RUNNER_TEMP/tug" --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier
       # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the provider settings.
       - id: review

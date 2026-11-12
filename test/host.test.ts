@@ -36,7 +36,7 @@ function cli(argv: string[], deps: Deps) {
   return done.then((code) => ({ code, out: out.join(""), err: err.join("") }))
 }
 
-const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "box", command], input })
+const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "box", command], input })
 const FETCH = `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${SHA} > ~/tug/VERSION`
 const SETTINGS = "sudo install -d -m 0755 /etc/tug && sudo install -m 0600 /dev/stdin /etc/tug/tug.env"
 const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'
@@ -134,8 +134,8 @@ describe("tug status", () => {
     const result = await cli(["status", "--host", "box"], { run })
     expect(result.code).toBe(0)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.args.at(-1)).toContain("systemctl is-active tug-runners tug-keys tug-prune.timer")
-    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-prune.timer": "active" }, running: 2 })
+    expect(calls[0]!.args.at(-1)).toContain("systemctl is-active tug-runners tug-keys tug-cleanup.timer")
+    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-cleanup.timer": "active" }, running: 2 })
   })
 
   it("exits 1 when a service is down", async () => {
@@ -277,12 +277,12 @@ describe("usage errors", () => {
   })
 })
 
-describe("removed flags", () => {
-  it.each(["--project", "--env"])("tug install refuses %s", async (name) => {
+describe("unknown flags", () => {
+  it("tug install refuses one before any remote command", async () => {
     const { run, calls } = fakeRun()
-    const result = await cli(["install", "--host", "box", name, "x"], { run, request: commits(SHA), env: ENV })
+    const result = await cli(["install", "--host", "box", "--env", "x"], { run, request: commits(SHA), env: ENV })
     expect(result.code).toBe(1)
-    expect(result.err).toContain(`Unknown option '${name}'`)
+    expect(result.err).toContain("Unknown option '--env'")
     expect(calls).toEqual([])
   })
 })

@@ -9,13 +9,13 @@ account, then waits for jobs. Each queued job gets a fresh container that runs t
 more than `TUG_MAX_RUNNERS` at once across all accounts, which share the host's CPUs and memory evenly. Nothing runs
 while no job waits. Restarting the service leaves running jobs alone.
 
-Give the runners a host of their own: a full pool uses all of it, and a daily timer (`tug-prune`) removes every Docker
+Give the runners a host of their own: a full pool uses all of it, and a daily timer (`tug-cleanup`) removes every Docker
 image unused for a day.
 
 No secret enters a container: the app's key stays in the service, and the container gets only its single-use config.
 Containers run as a non-root user with no capabilities and `no-new-privileges`, with CPU, memory and process limits,
 on the Docker network `tug`. `egress.nft` lets that network reach the internet and the key service, but not the rest of
-the host, its tailnet, or private networks. Neither service starts without these rules.
+the host or private networks. Neither service starts without these rules.
 
 The key service (`tug-keys`, `tug keys` on `172.30.99.1:8787`, in a container of Node's own image) holds the model
 settings, and only those: the GitHub App's key never enters its container. A review job asks it for one pass, `code`
@@ -53,8 +53,8 @@ Any secrets tool's `run` wrapper works too: it runs `tug install` with the setti
 3. `status` prints the services, the installed commit and the running jobs as JSON, and exits 1 unless the runner and key services are active.
 4. `remove` asks you to type the host's name. Without a terminal it needs `--yes`.
 
-That host needs only Debian with SSH, and passwordless `sudo` for the SSH user. A base URL must be an address it can
-reach, such as a proxy's address on your tailnet.
+That host needs only Debian with SSH, and passwordless `sudo` for the SSH user. A base URL must be an address the host
+can reach; the key service runs on the host's network, so a proxy on a private network works.
 
 | Setting | |
 | --- | --- |

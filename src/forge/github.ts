@@ -29,12 +29,16 @@ export async function token(env: NodeJS.ProcessEnv = process.env): Promise<strin
   throw new GitHubError("No GitHub token: set GITHUB_TOKEN, or sign in with `gh auth login`.")
 }
 
-/** A `Request` over fetch, against `GITHUB_API_URL` or api.github.com. */
-export function client(auth: string, options: { api?: string; fetch?: typeof fetch; timeoutMs?: number } = {}): Request {
+/**
+ * A `Request` over fetch, against `GITHUB_API_URL` or api.github.com. A read (a GET or a GraphQL query) is tried once
+ * more after a 5xx or a network error; a write never is, since it may have landed.
+ */
+export function client(auth: string, options: { api?: string; fetch?: typeof fetch; retryWaitMs?: number } = {}): Request {
   const api = (options.api ?? process.env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/u, "")
   const call = options.fetch ?? fetch
   return async <T>(method: string, path: string, init: { body?: unknown } = {}): Promise<T> => {
-    const response = await call(`${api}${path}`, {
+    const read = method === "GET" || (path === "/graphql" && /^\s*(query\b|\{)/u.test(String((init.body as Json | undefined)?.query)))
+    const send = () => call(`${api}${path}`, {
       method,
       headers: {
         accept: "application/vnd.github+json",
@@ -44,8 +48,17 @@ export function client(auth: string, options: { api?: string; fetch?: typeof fet
         ...(init.body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+      signal: AbortSignal.timeout(30_000),
     })
+    let response = await send().catch((error: unknown) => {
+      if (!read) throw error
+      return null
+    })
+    if (!response || (read && response.status >= 500)) {
+      await response?.body?.cancel()
+      await new Promise((resolve) => setTimeout(resolve, options.retryWaitMs ?? 2_000))
+      response = await send()
+    }
     const text = await response.text()
     if (!response.ok) {
       let message = text.slice(0, 300)
@@ -114,8 +127,12 @@ export async function readPull(input: { request: Request; repo: string; number: 
     }
     throw new GitHubError(`${repo}#${number} has more than ${MAX_PAGES * 100} ${key.replace("_", " ")}`)
   }
-  const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
-  const superseded = await supersededSuites(request, repo, head)
+  const [runs, superseded, statusList, threads] = await Promise.all([
+    all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs"),
+    supersededSuites(request, repo, head),
+    all(`/repos/${repo}/commits/${head}/status`, "statuses"),
+    unresolvedThreads(request, repo, number),
+  ])
   const suite = (run: Json) => Number((run.check_suite as Json | undefined)?.id)
   // A superseded check is dropped only when the newer run has a check of the same name to replace it.
   const replaced = new Set(runs.filter((run) => !superseded.has(suite(run))).map((run) => str(run.name)))
@@ -126,8 +143,12 @@ export async function readPull(input: { request: Request; repo: string; number: 
       status: str(run.status),
       conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
     }))
-  const statuses = (await all(`/repos/${repo}/commits/${head}/status`, "statuses")).map((status) => ({ context: str(status.context), state: str(status.state) }))
+  const statuses = statusList.map((status) => ({ context: str(status.context), state: str(status.state) }))
+  return { ...read, checks, statuses, threads }
+}
 
+/** The pull request's unresolved review threads, every page read. */
+async function unresolvedThreads(request: Request, repo: string, number: number): Promise<number> {
   const [owner, name] = repo.split("/") as [string, string]
   let threads = 0
   let after: string | null = null
@@ -141,10 +162,9 @@ export async function readPull(input: { request: Request; repo: string; number: 
     const found = graph.data?.repository?.pullRequest?.reviewThreads
     if (!found) throw new GitHubError(`GitHub returned no review threads for ${repo}#${number}`)
     threads += (found.nodes ?? []).filter((node) => node.isResolved !== true).length
-    if (!found.pageInfo?.hasNextPage) break
+    if (!found.pageInfo?.hasNextPage) return threads
     after = found.pageInfo.endCursor ?? null
   }
-  return { ...read, checks, statuses, threads }
 }
 
 /** Reads a pull request and names its state. */
@@ -223,7 +243,7 @@ export async function fileAt(request: Request, repo: string, path: string, ref: 
   }
 }
 
-export interface PostedReview {
+interface PostedReview {
   author: string
   commit: string
   body: string
@@ -240,7 +260,7 @@ export async function pullReviews(request: Request, repo: string, number: number
 }
 
 /** Sets one label of a group, such as `risk:low`, removing the group's others. Creates the label when the repository lacks it. */
-export async function setLabel(request: Request, repo: string, number: number, label: string, labels: string[], color = "ededed"): Promise<void> {
+export async function setLabel(request: Request, repo: string, number: number, label: string, labels: string[], color: string): Promise<void> {
   const group = `${label.split(":")[0]}:`
   for (const other of labels.filter((name) => name.startsWith(group) && name !== label)) {
     await request("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(other)}`).catch((error: GitHubError) => {

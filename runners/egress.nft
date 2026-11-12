@@ -1,6 +1,6 @@
 #!/usr/sbin/nft -f
 # Runner containers sit on the Docker network tug (172.30.99.0/24). They may reach the internet and the Tug key service
-# on the network's gateway, but not this host otherwise, its tailnet, or private networks.
+# on the network's gateway, but not this host otherwise or private networks, 100.64.0.0/10 (as Tailscale uses) included.
 table inet tug_egress
 delete table inet tug_egress
 
@@ -13,6 +13,7 @@ table inet tug_egress {
 
   chain forward {
     type filter hook forward priority filter; policy accept;
+    # Tailscale's DNS resolver, for a host that uses it; containers resolve names through the host's resolvers.
     ip saddr 172.30.99.0/24 ip daddr 100.100.100.100 meta l4proto { udp, tcp } th dport 53 accept
     ip saddr 172.30.99.0/24 ip daddr { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject
   }

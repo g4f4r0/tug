@@ -3,10 +3,13 @@ import { decide, type Decision } from "./core/decide.ts"
 import { HUMAN_LABEL, state } from "./core/state.ts"
 import { fileAt, pullFiles, readPull, setLabel, touchedPaths, type Request } from "./forge/github.ts"
 
-/** The merge job's own check run, which is still running while it decides. A finished one named the same still counts. */
-const OWN_CHECK = /(^|\/ )(merge|squash or hold)$/u
+/**
+ * The merge job's own check run, which is still running while it decides: merge.yml's job `squash or hold`, which
+ * GitHub names after the calling job, as `merge / squash or hold` for tug init's. A finished one still counts.
+ */
+const OWN_CHECK = /^(?:[^/]+ \/ )?squash or hold$/u
 
-export interface MergeResult {
+interface MergeResult {
   decision: Decision
   state: PullState
   merged: boolean

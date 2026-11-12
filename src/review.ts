@@ -4,7 +4,7 @@ import { parsePolicy, riskRank, RISKS, SEVERITIES, VERSION, Review, type Finding
 import { ask, type Pass, type PassSettings } from "./engine.ts"
 import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
 
-export const KINDS = ["code", "security"] as const
+const KINDS = ["code", "security"] as const
 /** Only a marker that ends the body counts, so one quoted in a finding can't stand in for it. */
 const MARKER = /<!-- tug:review ([A-Za-z0-9_-]+) -->\s*$/u
 /** Characters of patches sent to the model; past this the review can't see the whole change, so it never says merge. */
@@ -44,7 +44,7 @@ export function readMarker(body: string): Review | null {
 export const writeMarker = (review: Review) => `<!-- tug:review ${Buffer.from(JSON.stringify(review)).toString("base64url")} -->`
 
 /** The reviews Tug posted, by the account `reviewer`, oldest first. */
-export async function tugReviews(request: Request, repo: string, number: number, reviewer: string): Promise<Review[]> {
+async function tugReviews(request: Request, repo: string, number: number, reviewer: string): Promise<Review[]> {
   return (await pullReviews(request, repo, number)).filter((posted) => posted.author === reviewer).flatMap((posted) => {
     const review = readMarker(posted.body)
     return review && review.head === posted.commit ? [review] : []
@@ -141,26 +141,30 @@ export function render(review: Review, files: PullFile[], since: string | null):
 
 const labelsOf = async (request: Request, repo: string, number: number) => ((await request<{ labels?: { name?: string }[] }>("GET", `/repos/${repo}/issues/${number}`)).labels ?? []).map((label) => label.name ?? "")
 
-export interface ReviewResult {
+interface ReviewResult {
   review: Review
   /** A new critical or high finding: the check fails. */
   failed: boolean
 }
 
 /** Reviews the pull request's head with every kind, posts one COMMENT review, and sets its `risk:*` label. */
-export async function runReview(input: { request: Request; repo: string; number: number; settings: Record<Pass, PassSettings>; reviewer: string; promptsDir: URL; model?: typeof fetch }): Promise<ReviewResult> {
+export async function runReview(input: { request: Request; repo: string; number: number; settings: Record<Pass, PassSettings>; reviewer: string; promptsDir: URL }): Promise<ReviewResult> {
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
-  const done = await tugReviews(request, repo, number, input.reviewer)
+  const [done, policyText, files, conversation] = await Promise.all([
+    tugReviews(request, repo, number, input.reviewer),
+    // The policy comes from the base branch, so a pull request can't loosen its own review.
+    fileAt(request, repo, "tug.json", pull.baseSha),
+    pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles),
+    pullComments(request, repo, number),
+  ])
   const earlier = done.at(-1) ?? null
   const earlierFindings = done.flatMap((review) => review.findings)
-  // The policy comes from the base branch, so a pull request can't loosen its own review.
-  const policy = parsePolicy(await fileAt(request, repo, "tug.json", pull.baseSha))
-  const files = await pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles)
-  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, await pullComments(request, repo, number))
+  const policy = parsePolicy(policyText)
+  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, conversation)
   const answers = Object.fromEntries(
     await Promise.all(
-      KINDS.map(async (kind) => [kind, await ask({ settings: input.settings[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review`, request: input.model })] as const),
+      KINDS.map(async (kind) => [kind, await ask({ settings: input.settings[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review` })] as const),
     ),
   ) as Record<(typeof KINDS)[number], KindAnswer>
   const review = combine(pull.head, answers, earlier ? { ...earlier, findings: earlierFindings } : null, complete)

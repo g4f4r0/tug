@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type fakeDocker struct {
 	stopped    map[string]bool
 	ps         string
 	logs       map[string]string
+	logArgs    [][]string
 }
 
 // shared is installed once, so a runner's watch left over from an earlier test never races a swap of docker.
@@ -40,7 +42,7 @@ func TestMain(m *testing.M) {
 func newFakeDocker(*testing.T) *fakeDocker {
 	shared.mu.Lock()
 	defer shared.mu.Unlock()
-	shared.containers, shared.stopped, shared.ps, shared.logs = map[string]chan struct{}{}, map[string]bool{}, "", map[string]string{}
+	shared.containers, shared.stopped, shared.ps, shared.logs, shared.logArgs = map[string]chan struct{}{}, map[string]bool{}, "", map[string]string{}, nil
 	return shared
 }
 
@@ -91,7 +93,8 @@ func (f *fakeDocker) run(env []string, args ...string) ([]byte, error) {
 	case "logs":
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		return []byte(f.logs[args[1]]), nil
+		f.logArgs = append(f.logArgs, args)
+		return []byte(f.logs[args[len(args)-1]]), nil
 	}
 	return nil, nil
 }
@@ -234,6 +237,12 @@ func TestAdoptedJobsKeepTheirSlotUntilTheyExit(t *testing.T) {
 	if p.free() != 0 || d.running() != 2 {
 		t.Fatalf("want both busy containers adopted and the idle one removed; free %d, containers %d", p.free(), d.running())
 	}
+	d.mu.Lock()
+	logArgs := d.logArgs
+	d.mu.Unlock()
+	if len(logArgs) != 3 || !slices.Equal(logArgs[0], []string{"logs", "--tail", "100", "tug-busy"}) {
+		t.Fatalf("want each container's last 100 log lines read, got %v", logArgs)
+	}
 
 	// A scope that is served counts its adopted runner, so it starts no second one for the same job.
 	s := p.addScaler("https://github.com/a")
@@ -350,5 +359,34 @@ func TestShareSplitsTheHostEvenly(t *testing.T) {
 	// Never below one CPU and 1 GiB, however many containers.
 	if cpus, memory := share(2, 2<<30, 8); cpus != "1.00" || memory != fmt.Sprint(int64(1<<30)) {
 		t.Fatalf("got %s CPUs, %s bytes", cpus, memory)
+	}
+}
+
+func TestDockerTimesOutEveryCommandButWait(t *testing.T) {
+	script := t.TempDir() + "/docker"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousBin, previousTimeout := dockerBin, dockerTimeout
+	dockerBin, dockerTimeout = script, 50*time.Millisecond
+	defer func() { dockerBin, dockerTimeout = previousBin, previousTimeout }()
+
+	started := time.Now()
+	if _, err := runDocker(nil, "ps"); err == nil || time.Since(started) > 900*time.Millisecond {
+		t.Fatalf("want ps stopped at its timeout, got %v after %s", err, time.Since(started))
+	}
+	started = time.Now()
+	if _, err := runDocker(nil, "wait", "tug-1"); err != nil || time.Since(started) < time.Second {
+		t.Fatalf("want wait to run to its end, got %v after %s", err, time.Since(started))
+	}
+}
+
+func TestCleanupServicePullsTheRunnerImageAgain(t *testing.T) {
+	unit, err := os.ReadFile("../tug-cleanup.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), "docker pull --quiet "+runnerImage+"\n") {
+		t.Fatalf("tug-cleanup.service does not pull %s again", runnerImage)
 	}
 }

@@ -1,9 +1,0 @@
-[Unit]
-Description=Remove Docker images and build cache Tug's runners no longer use
-After=docker.service
-
-[Service]
-Type=oneshot
-# Unused for a day: the current runner image is pulled again on the next job.
-ExecStart=/usr/bin/docker image prune --all --force --filter until=24h
-ExecStart=/usr/bin/docker builder prune --all --force --filter until=24h
