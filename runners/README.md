@@ -23,7 +23,7 @@ sudo runners/install.sh --uninstall
 Each scope, `owner/repo` or an organization, gets `<slots>` runners. Organization runners join its Default runner
 group, which serves private repositories only.
 
-`<secrets-user>` is the host user whose Infisical login holds, per scope owner, `TUG_RUNNER_GITHUB_TOKEN_<OWNER>` (the
-owner in capitals, `-` as `_`) or else `TUG_RUNNER_GITHUB_TOKEN`: a token that may register runners there
-(Administration: write on a repository, or Self-hosted runners: write on an organization). It also holds `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
+`<secrets-user>` is the host user whose Infisical login holds, per scope owner, `TUG_GITHUB_TOKEN_<OWNER>` (the
+owner in capitals, `-` as `_`) or else `TUG_GITHUB_TOKEN`: a token that may register runners there
+(Administration: write on a repository; for organizations, a classic token with only `manage_runners:org` covers them all). It also holds `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
 `LLM_REASONING_EFFORT`. Never use self-hosted runners for public repositories.
