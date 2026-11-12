@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -266,65 +263,104 @@ func TestAdoptedJobsKeepTheirSlotUntilTheyExit(t *testing.T) {
 	eventually(t, "the served scope's slot", func() bool { return p.free() == 2 && s.count() == 0 })
 }
 
-func TestNormalizePEMRestoresLineBreaks(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	flat := strings.ReplaceAll(encoded, "\n", " ")
-	block, _ := pem.Decode([]byte(normalizePEM(flat)))
-	if block == nil {
-		t.Fatal("normalized key does not decode")
-	}
-	if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err != nil {
-		t.Fatal(err)
+func TestConfigNeedsTheTokenAndAccounts(t *testing.T) {
+	for _, tc := range []struct{ token, accounts, err string }{
+		{"ghp_x", "me,my-org", ""},
+		{"", "me", "TUG_GITHUB_TOKEN and TUG_ACCOUNTS are required"},
+		{"ghp_x", " , ", "TUG_GITHUB_TOKEN and TUG_ACCOUNTS are required"},
+	} {
+		t.Setenv("TUG_GITHUB_TOKEN", tc.token)
+		t.Setenv("TUG_ACCOUNTS", tc.accounts)
+		c, err := loadConfig()
+		if tc.err == "" && (err != nil || c.token != "ghp_x" || !slices.Equal(c.owners, []string{"me", "my-org"})) {
+			t.Fatalf("want the token and both accounts, got %+v, %v", c, err)
+		}
+		if tc.err != "" && (err == nil || err.Error() != tc.err) {
+			t.Fatalf("want %q, got %v", tc.err, err)
+		}
 	}
 }
 
+func TestMissingScopesNamesOnlyAClassicTokensGaps(t *testing.T) {
+	for _, tc := range []struct {
+		header  http.Header
+		missing []string
+	}{
+		{http.Header{"X-Oauth-Scopes": {"admin:org, gist, repo, workflow"}}, nil},
+		{http.Header{"X-Oauth-Scopes": {"gist, read:org, repo, workflow"}}, []string{"admin:org"}},
+		{http.Header{"X-Oauth-Scopes": {""}}, []string{"repo", "admin:org"}},
+		// A fine-grained token has no scopes header: nothing to check.
+		{http.Header{}, nil},
+	} {
+		if got := missingScopes(tc.header); !slices.Equal(got, tc.missing) {
+			t.Fatalf("%v: want %v, got %v", tc.header, tc.missing, got)
+		}
+	}
+}
+
+// lockedBuffer collects log lines that other tests' goroutines may write too.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
+	type repo struct {
+		FullName string `json:"full_name"`
+		Private  bool   `json:"private"`
+		Archived bool   `json:"archived,omitempty"`
 	}
-	type account struct {
-		Login string `json:"login"`
-		Type  string `json:"type"`
-	}
-	type inst struct {
-		ID      int64   `json:"id"`
-		Account account `json:"account"`
-	}
-	// Page 1 is full, so the allowed user on page 2 is found only by paginating.
-	page1 := []inst{{ID: 1, Account: account{"HelloGafaro", "Organization"}}, {ID: 2, Account: account{"public-org", "Organization"}}}
+	// Page 1 is full, so the private repository on page 2 is found only by paginating.
+	page1 := []repo{{"g4f4r0/private", true, false}, {"g4f4r0/public", false, false}, {"g4f4r0/old", true, true}}
 	for i := len(page1); i < 100; i++ {
-		page1 = append(page1, inst{ID: int64(100 + i), Account: account{fmt.Sprintf("stranger-%d", i), "User"}})
+		page1 = append(page1, repo{fmt.Sprintf("g4f4r0/public-%d", i), false, false})
 	}
-	page2 := []inst{{ID: 3, Account: account{"g4f4r0", "User"}}}
-	var tokens []string
+	page2 := []repo{{"g4f4r0/second", true, false}}
+	gone := map[string]bool{}
 	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
+		if r.Header.Get("Authorization") != "Bearer ghp_x" {
+			http.Error(w, "Bad credentials", http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		path, query := r.URL.Path, r.URL.Query()
 		switch {
-		case path == "/app/installations" && r.URL.Query().Get("page") == "1":
+		case gone[path]:
+			http.NotFound(w, r)
+		case path == "/user":
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "G4F4R0"})
+		case path == "/user/repos" && (query.Get("affiliation") != "owner" || query.Get("visibility") != "private"):
+			http.Error(w, "only the user's own private repositories", http.StatusBadRequest)
+		case path == "/user/repos" && query.Get("page") == "1":
 			_ = json.NewEncoder(w).Encode(page1)
-		case path == "/app/installations":
+		case path == "/user/repos" && query.Get("page") == "2":
 			_ = json.NewEncoder(w).Encode(page2)
-		case strings.HasSuffix(path, "/access_tokens"):
-			mu.Lock()
-			tokens = append(tokens, path)
-			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "t"})
+		case path == "/users/hellogafaro":
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "HelloGafaro", "type": "Organization"})
+		case path == "/users/public-org", path == "/users/locked-org":
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": path[len("/users/"):], "type": "Organization"})
+		case path == "/users/someone":
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "someone", "type": "User"})
 		case path == "/orgs/HelloGafaro/actions/runner-groups/1":
 			_ = json.NewEncoder(w).Encode(map[string]bool{"allows_public_repositories": false})
 		case path == "/orgs/public-org/actions/runner-groups/1":
 			_ = json.NewEncoder(w).Encode(map[string]bool{"allows_public_repositories": true})
-		case path == "/installation/repositories":
-			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []map[string]any{
-				{"full_name": "g4f4r0/private", "private": true},
-				{"full_name": "g4f4r0/public", "private": false},
-				{"full_name": "g4f4r0/old", "private": true, "archived": true},
-			}})
+		case path == "/orgs/locked-org/actions/runner-groups/1":
+			http.Error(w, "Must have admin rights to Repository.", http.StatusForbidden)
 		default:
 			http.NotFound(w, r)
 		}
@@ -333,22 +369,50 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	previous := apiBase
 	apiBase = server.URL
 	defer func() { apiBase = previous }()
+	logs := &lockedBuffer{}
+	previousLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	defer slog.SetDefault(previousLog)
 
-	c := &config{appID: "1", signer: key, owners: []string{"hellogafaro", "public-org", "g4f4r0"}}
-	scopes, err := c.discover(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	c := &config{token: "ghp_x", owners: []string{"hellogafaro", "public-org", "locked-org", "someone", "g4f4r0"}}
+	urls := func() []string {
+		t.Helper()
+		scopes, err := c.discover(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var urls []string
+		for _, sc := range scopes {
+			urls = append(urls, sc.url)
+		}
+		return urls
 	}
-	var urls []string
-	for _, sc := range scopes {
-		urls = append(urls, sc.url)
+	if want, got := []string{"https://github.com/HelloGafaro", "https://github.com/g4f4r0/private", "https://github.com/g4f4r0/second"}, urls(); !slices.Equal(got, want) {
+		t.Fatalf("want %v, got %v", want, got)
 	}
-	if want := []string{"https://github.com/HelloGafaro", "https://github.com/g4f4r0/private"}; !slices.Equal(urls, want) {
-		t.Fatalf("want %v, got %v", want, urls)
+	for _, line := range []string{
+		`msg="Skipping an organization whose runners the token can't manage: it needs an owner's token with admin:org" account=locked-org`,
+		`msg="Skipping an organization whose Default runner group allows public repositories" account=public-org`,
+		`msg="Skipping another user's account: the token serves only its own user's repositories" account=someone`,
+	} {
+		if !strings.Contains(logs.String(), line) {
+			t.Fatalf("want a log line with %s, got:\n%s", line, logs)
+		}
 	}
-	// Never even signs in to an installation outside TUG_ACCOUNTS.
-	if len(tokens) != 3 {
-		t.Fatalf("want tokens for the 3 allowed installations only, got %v", tokens)
+
+	// The next round stops serving a repository and an organization that are gone.
+	mu.Lock()
+	page2 = nil
+	gone["/users/hellogafaro"] = true
+	mu.Unlock()
+	if want, got := []string{"https://github.com/g4f4r0/private"}, urls(); !slices.Equal(got, want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+
+	// A token GitHub refuses finds nothing to serve, so the current scopes stay until the next round.
+	c.token = "revoked"
+	if _, err := c.discover(context.Background()); !refused(err) {
+		t.Fatalf("want a refused sign-in, got %v", err)
 	}
 }
 

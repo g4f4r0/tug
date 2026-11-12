@@ -24,11 +24,11 @@ The CLI needs Node 24 or later. Run it as `npx -y github:hellogafaro/tug#main <c
 
 Use this for private repositories only. Each job runs in a fresh Docker container that is deleted after it, with capped CPU and memory, no secrets, and no access to the server or its network. A key service on the server holds the model keys, so repositories need no secrets.
 
-1. Create a GitHub App from [this link](https://github.com/settings/apps/new?name=tug-runners&url=https://github.com/hellogafaro/tug&public=true&webhook_active=false&administration=write&organization_self_hosted_runners=write), which sets its permissions; pick any free name. Generate a private key, and install the app on each account to serve. On a personal account, only the repositories you select are served.
+1. Create a classic token with the `repo` and `admin:org` scopes from [this link](https://github.com/settings/tokens/new?description=Tug&scopes=repo,admin:org), or with the GitHub CLI run `gh auth refresh -s admin:org` and use `gh auth token`. It must be classic, because one classic token serves all your accounts. It acts as you, so it manages runners only in organizations you own and repositories you own, and it can reach every repository you can, so keep the server private.
 2. Get a Debian server with SSH and passwordless `sudo`. Nothing else is needed: `tug install` adds Docker and the rest.
 3. Install, with the settings in your environment:
    ```sh
-   export TUG_APP_ID=123456 TUG_APP_PRIVATE_KEY="$(cat app.pem)" TUG_ACCOUNTS=my-user,my-org \
+   export TUG_GITHUB_TOKEN="$(gh auth token)" TUG_ACCOUNTS=my-user,my-org \
      TUG_REVIEW_MODEL=openai/gpt-6.1-sol TUG_OPENAI_API_KEY=sk-...
    tug install --host <ssh-host>
    ```
@@ -44,7 +44,7 @@ Use this for private repositories only. Each job runs in a fresh Docker containe
 4. After resolving review threads without a push, rerun the merge job: `gh run rerun <run-id> --job <job-id>`.
 5. Stop Tug from merging one pull request with the `merge:hold` label.
 6. Follow a pull request with `tug pr watch owner/repo#12`. It waits quietly, then prints the state as JSON and exits: 0 ready or merged, 2 conflicts, 3 open threads, 4 failed checks, 5 timeout, 6 held or closed, 7 GitHub unreachable, 1 usage error. `tug pr state` prints the state at once.
-7. Move to another server: `tug remove --host <old>` first, because only one server can serve the app at a time, then `tug install --host <new>`.
+7. Move to another server: `tug remove --host <old>` first, because only one server can serve an account at a time, then `tug install --host <new>`.
 8. Remove Tug from a repository with `tug remove --repo <owner/repo>`. It opens a pull request that deletes the two files.
 
 `remove` asks you to type the name. Without a terminal it needs `--yes`.
@@ -88,8 +88,8 @@ Use this for private repositories only. Each job runs in a fresh Docker containe
 | `TUG_OPENAI_BASE_URL`, `TUG_ANTHROPIC_BASE_URL` | both | Optional. Default each provider's API; any compatible proxy works. |
 | `TUG_REVIEW_REASONING_EFFORT` | both | Optional, such as `high`. Unset, the provider's default applies. |
 | `TUG_SECURITY_MODEL`, `TUG_SECURITY_REASONING_EFFORT` | both | Optional. The security pass; each falls back to the review's. |
-| `TUG_APP_ID`, `TUG_APP_PRIVATE_KEY` | server | The GitHub App. A key without its line breaks works too. |
-| `TUG_ACCOUNTS` | server | The users and organizations to serve, such as `my-user,my-org`. |
+| `TUG_GITHUB_TOKEN` | server | A classic token with `repo` and `admin:org`, or `gh auth token`. |
+| `TUG_ACCOUNTS` | server | Your user and the organizations to serve, such as `my-user,my-org`. Your user serves its own private repositories. |
 | `TUG_MAX_RUNNERS` | server | Optional. Jobs at once, across all accounts. Default 4. |
 
 "Both" means repository or organization secrets on GitHub's runners, or the server's settings on your own.

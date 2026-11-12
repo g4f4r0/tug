@@ -1,4 +1,3 @@
-import { createPrivateKey, generateKeyPairSync } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import { main, type Deps } from "../src/cli.ts"
 import type { Request } from "../src/forge/github.ts"
@@ -41,8 +40,7 @@ const FETCH = `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/
 const SETTINGS = "sudo install -d -m 0755 /etc/tug && sudo install -m 0600 /dev/stdin /etc/tug/tug.env"
 const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'
 
-const PEM = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey
-const ENV = { TUG_APP_ID: "1", TUG_APP_PRIVATE_KEY: PEM, TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', TUG_REVIEWER: "someone", OTHER: "secret", PATH: "/bin" }
+const ENV = { TUG_GITHUB_TOKEN: "ghp_token", TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', TUG_REVIEWER: "someone", OTHER: "secret", PATH: "/bin" }
 
 /** What systemd's EnvironmentFile reads from a double-quoted line. */
 const unquote = (line: string) => /^(\w+)="(.*)"$/u.exec(line)!.slice(1, 3).map((part) => part.replace(/\\(["\\`$])/gu, "$1")) as [string, string]
@@ -59,32 +57,19 @@ describe("tug install and update", () => {
     expect(calls[2]!.input).toBeUndefined()
     const lines = String(calls[1]!.input).split("\n")
     expect(lines.pop()).toBe("")
-    expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_APP_PRIVATE_KEY: PEM.trim().replaceAll("\n", " "), TUG_REVIEWER: undefined, OTHER: undefined, PATH: undefined })
+    expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_REVIEWER: undefined, OTHER: undefined, PATH: undefined })
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "main" })
     expect(result.err).toBe("Installed 0123456 on box\n")
     expect(result.out + result.err).not.toContain("secret")
-  })
-
-  it("sends the private key on one line that gives the same key back, whether its line breaks came real, as spaces, escaped or not at all", async () => {
-    for (const key of [PEM, PEM.replaceAll("\n", " "), PEM.replaceAll("\n", "\\n"), PEM.replaceAll("\n", "")]) {
-      const { run, calls } = fakeRun()
-      expect((await cli(["install", "--host", "box"], { run, request: commits(SHA), env: { ...ENV, TUG_APP_PRIVATE_KEY: key } })).code).toBe(0)
-      const [, value] = unquote(String(calls[1]!.input).split("\n").find((line) => line.startsWith("TUG_APP_PRIVATE_KEY="))!)
-      // The runner service's normalizePEM: the body's whitespace dropped, then 64 characters a line.
-      const [, kind, body] = /^-----BEGIN ([A-Z ]+)-----(.*)-----END \1-----$/u.exec(value)!
-      const rebuilt = `-----BEGIN ${kind}-----\n${body!.replace(/\s/gu, "").match(/.{1,64}/gu)!.join("\n")}\n-----END ${kind}-----\n`
-      expect(rebuilt).toBe(PEM)
-      expect(createPrivateKey(rebuilt).export({ type: "pkcs1", format: "pem" })).toBe(PEM)
-    }
   })
 
   it.each([
     [{ TUG_ACCOUNTS: undefined }, "Set TUG_ACCOUNTS"],
     [{ TUG_REVIEW_MODEL: undefined }, "Set TUG_REVIEW_MODEL"],
     [{ TUG_OPENAI_API_KEY: undefined }, "Set TUG_OPENAI_API_KEY for openai/gpt-6.1-sol"],
-    [{ TUG_APP_ID: "" }, "Set TUG_APP_ID"],
-    [{ TUG_APP_PRIVATE_KEY: undefined }, "Set TUG_APP_PRIVATE_KEY"],
-    [{ TUG_APP_PRIVATE_KEY: "not a key" }, "TUG_APP_PRIVATE_KEY is not a PEM key"],
+    [{ TUG_GITHUB_TOKEN: undefined }, "Set TUG_GITHUB_TOKEN"],
+    [{ TUG_GITHUB_TOKEN: " " }, "Set TUG_GITHUB_TOKEN"],
+    [{ TUG_GITHUB_TOKEN: "ghp_token\nTUG_ACCOUNTS=evil" }, "TUG_GITHUB_TOKEN has a line break"],
     [{ TUG_MAX_RUNNERS: "0" }, "TUG_MAX_RUNNERS must be a positive number"],
     [{ TUG_REVIEW_REASONING_EFFORT: "high\nTUG_ACCOUNTS=evil" }, "TUG_REVIEW_REASONING_EFFORT has a line break"],
   ])("refuses %j in one line, before GitHub or the host", async (change, message) => {
