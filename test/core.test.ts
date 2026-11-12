@@ -66,6 +66,13 @@ describe("filters", () => {
     expect(passes(["dependabot[bot]"], "dependabotb")).toBe(false)
     expect(passes(["G4F4R0"], "g4f4r0", { caseless: true })).toBe(true)
   })
+
+  it("match file names with newlines, so an excluded directory can't be escaped", () => {
+    expect(passes(["!locales/**"], "locales/a\nb.json")).toBe(false)
+    expect(passes(["!locales/**"], "locales/a\n/b.json")).toBe(false)
+    expect(passes(["!**/secret"], "a\nb/secret")).toBe(false)
+    expect(passes(["!docs/?"], "docs/\n")).toBe(false)
+  })
 })
 
 describe("policy", () => {

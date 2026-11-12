@@ -17,7 +17,8 @@ export function globRegExp(glob: string): RegExp {
     else if (char === "?") source += "[^/]"
     else source += char.replace(/[\\^$.|+()[\]{}]/gu, "\\$&")
   }
-  return new RegExp(`^${source}$`, "u")
+  // dotAll: a git path can hold a newline, and `**` must still match it.
+  return new RegExp(`^${source}$`, "su")
 }
 
 /** Whether `value` passes `patterns`. No patterns pass everything. */
