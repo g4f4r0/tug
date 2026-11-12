@@ -1,0 +1,38 @@
+{
+  "name": "tug",
+  "version": "0.1.0",
+  "description": "PR review, security review and merge in CI, on your own runners, with any model.",
+  "license": "MIT",
+  "type": "module",
+  "repository": "github:hellogafaro/tug",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "tug": "dist/bin.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "schema.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "tug": "node src/bin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "schema": "node --experimental-strip-types scripts/schema.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.0",
+    "vitest": "^4.1.1"
+  }
+}
