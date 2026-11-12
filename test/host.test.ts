@@ -1,3 +1,4 @@
+import { createPrivateKey, generateKeyPairSync } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import { main, type Deps } from "../src/cli.ts"
 import type { Request } from "../src/forge/github.ts"
@@ -6,12 +7,11 @@ import type { Run } from "../src/host.ts"
 
 const SHA = "0123456789abcdef0123456789abcdef01234567"
 
-/** A runner that records every call and answers `infisical` and `ssh` from a script. */
-function fakeRun(answers: { infisical?: string; status?: string } = {}) {
-  const calls: { cmd: string; args: string[]; input?: string }[] = []
+/** A runner that records every call and answers `ssh` from a script. */
+function fakeRun(answers: { status?: string } = {}) {
+  const calls: { cmd: string; args: string[]; input?: string | Buffer }[] = []
   const run: Run = (cmd, args, input) => {
     calls.push({ cmd, args, input })
-    if (cmd === "infisical") return { status: 0, stdout: answers.infisical ?? "", stderr: "" }
     return { status: 0, stdout: args.at(-1)?.startsWith("echo") ? (answers.status ?? "") : "", stderr: "" }
   }
   return { run, calls }
@@ -22,39 +22,81 @@ const commits = (sha: string): Request => (async (_method: string, path: string)
   return { sha }
 }) as Request
 
+const TARBALL = Buffer.from("tarball")
+const downloads: string[] = []
+const download = async (url: string) => {
+  downloads.push(url)
+  return TARBALL
+}
+
 function cli(argv: string[], deps: Deps) {
   const out: string[] = []
   const err: string[] = []
-  const done = main(argv, { out: (text) => out.push(text), err: (text) => err.push(text) }, deps)
+  const done = main(argv, { out: (text) => out.push(text), err: (text) => err.push(text) }, { download, env: {}, ...deps })
   return done.then((code) => ({ code, out: out.join(""), err: err.join("") }))
 }
 
-const ssh = (command: string, input?: string) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "box", command], input })
-const FETCH = `rm -rf ~/tug && mkdir ~/tug && curl -fsSL https://codeload.github.com/hellogafaro/tug/tar.gz/${SHA} | tar -xz --strip-components=1 -C ~/tug && echo ${SHA} > ~/tug/VERSION`
+const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "box", command], input })
+const FETCH = `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${SHA} > ~/tug/VERSION`
 const SETTINGS = "sudo install -d -m 0755 /etc/tug && sudo install -m 0600 /dev/stdin /etc/tug/tug.env"
 const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'
 
+const PEM = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey
+const ENV = { TUG_APP_ID: "1", TUG_APP_PRIVATE_KEY: PEM, TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', OTHER: "secret", PATH: "/bin" }
+
+/** What systemd's EnvironmentFile reads from a double-quoted line. */
+const unquote = (line: string) => /^(\w+)="(.*)"$/u.exec(line)!.slice(1, 3).map((part) => part.replace(/\\(["\\`$])/gu, "$1")) as [string, string]
+
 describe("tug install and update", () => {
-  it("fetches the commit, sends only TUG_ settings as stdin, then installs", async () => {
-    const { run, calls } = fakeRun({ infisical: "TUG_APP_ID=1\nOTHER=secret\nTUG_OPENAI_API_KEY=k=\nPATH=/bin\n" })
-    const result = await cli(["install", "--host", "box", "--project", "p1", "--env", "prod"], { run, request: commits(SHA) })
+  it("downloads the commit, sends it and only the TUG_ settings as stdin, then installs", async () => {
+    downloads.length = 0
+    const { run, calls } = fakeRun()
+    const result = await cli(["install", "--host", "box"], { run, request: commits(SHA), env: ENV })
     expect(result.code).toBe(0)
-    expect(calls).toEqual([
-      { cmd: "infisical", args: ["export", "--projectId", "p1", "--env", "prod", "--format", "dotenv", "--silent"], input: undefined },
-      { ...ssh(FETCH), input: undefined },
-      ssh(SETTINGS, "TUG_APP_ID=1\nTUG_OPENAI_API_KEY=k=\n"),
-      { ...ssh(INSTALL), input: undefined },
-    ])
+    expect(downloads).toEqual([`https://codeload.github.com/hellogafaro/tug/tar.gz/${SHA}`])
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, SETTINGS, INSTALL])
+    expect(calls[0]).toEqual(ssh(FETCH, TARBALL))
+    expect(calls[2]!.input).toBeUndefined()
+    const lines = String(calls[1]!.input).split("\n")
+    expect(lines.pop()).toBe("")
+    expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_APP_PRIVATE_KEY: PEM.trim().replaceAll("\n", " "), OTHER: undefined, PATH: undefined })
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "main" })
     expect(result.err).toBe("Installed 0123456 on box\n")
     expect(result.out + result.err).not.toContain("secret")
   })
 
-  it("fails before touching the host when no TUG_ setting comes out", async () => {
-    const { run, calls } = fakeRun({ infisical: "OTHER=1\n" })
-    const result = await cli(["install", "--host", "box", "--project", "p1", "--env", "prod"], { run, request: commits(SHA) })
-    expect(result.code).toBe(1)
-    expect(calls.map((call) => call.cmd)).toEqual(["infisical"])
+  it("sends the private key on one line that gives the same key back, whether or not it came with line breaks", async () => {
+    for (const key of [PEM, PEM.replaceAll("\n", " "), PEM.replaceAll("\n", "")]) {
+      const { run, calls } = fakeRun()
+      expect((await cli(["install", "--host", "box"], { run, request: commits(SHA), env: { ...ENV, TUG_APP_PRIVATE_KEY: key } })).code).toBe(0)
+      const [, value] = unquote(String(calls[1]!.input).split("\n").find((line) => line.startsWith("TUG_APP_PRIVATE_KEY="))!)
+      // The runner service's normalizePEM: the body's whitespace dropped, then 64 characters a line.
+      const [, kind, body] = /^-----BEGIN ([A-Z ]+)-----(.*)-----END \1-----$/u.exec(value)!
+      const rebuilt = `-----BEGIN ${kind}-----\n${body!.replace(/\s/gu, "").match(/.{1,64}/gu)!.join("\n")}\n-----END ${kind}-----\n`
+      expect(rebuilt).toBe(PEM)
+      expect(createPrivateKey(rebuilt).export({ type: "pkcs1", format: "pem" })).toBe(PEM)
+    }
+  })
+
+  it.each([
+    [{ TUG_ACCOUNTS: undefined }, "Set TUG_ACCOUNTS"],
+    [{ TUG_REVIEW_MODEL: undefined }, "Set TUG_REVIEW_MODEL"],
+    [{ TUG_OPENAI_API_KEY: undefined }, "Set TUG_OPENAI_API_KEY for openai/gpt-6.1-sol"],
+    [{ TUG_APP_ID: "" }, "Set TUG_APP_ID"],
+    [{ TUG_APP_PRIVATE_KEY: undefined }, "Set TUG_APP_PRIVATE_KEY"],
+    [{ TUG_APP_PRIVATE_KEY: "not a key" }, "TUG_APP_PRIVATE_KEY is not a PEM key"],
+    [{ TUG_MAX_RUNNERS: "0" }, "TUG_MAX_RUNNERS must be a positive number"],
+    [{ TUG_REVIEW_REASONING_EFFORT: "high\nTUG_ACCOUNTS=evil" }, "TUG_REVIEW_REASONING_EFFORT has a line break"],
+  ])("refuses %j in one line, before GitHub or the host", async (change, message) => {
+    downloads.length = 0
+    const { run, calls } = fakeRun()
+    const request = (async () => {
+      throw new Error("GitHub was called")
+    }) as Request
+    const result = await cli(["install", "--host", "box"], { run, request, env: { ...ENV, ...change } })
+    expect(result).toEqual({ code: 1, out: "", err: `${message}\n` })
+    expect(calls).toEqual([])
+    expect(downloads).toEqual([])
   })
 
   it("updates without touching settings, at the ref given", async () => {
@@ -63,9 +105,9 @@ describe("tug install and update", () => {
       expect(path).toBe("/repos/hellogafaro/tug/commits/feat/own-host")
       return { sha: SHA }
     }) as Request
-    const result = await cli(["update", "--host", "box", "--ref", "feat/own-host"], { run, request })
+    const result = await cli(["update", "--host", "box", "--ref", "feat/own-host"], { run, request, env: ENV })
     expect(result.code).toBe(0)
-    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, INSTALL])
+    expect(calls).toEqual([ssh(FETCH, TARBALL), ssh(INSTALL)])
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "feat/own-host" })
   })
 
@@ -219,9 +261,7 @@ describe("usage errors", () => {
   }
 
   it.each([
-    [["install", "--host", "box", "--env", "prod"], "tug install needs --project"],
-    [["install", "--host", "box", "--project", "p"], "tug install needs --env"],
-    [["install", "--project", "p", "--env", "prod"], "tug install needs --host"],
+    [["install"], "tug install needs --host"],
     [["update"], "tug update needs --host"],
     [["status"], "tug status needs --host"],
     [["remove"], "tug remove takes --host or --repo, not both or neither"],
@@ -234,6 +274,16 @@ describe("usage errors", () => {
     const result = await usage(argv)
     expect(result.code).toBe(1)
     expect(result.err).toBe(`${message}\n`)
+  })
+})
+
+describe("removed flags", () => {
+  it.each(["--project", "--env"])("tug install refuses %s", async (name) => {
+    const { run, calls } = fakeRun()
+    const result = await cli(["install", "--host", "box", name, "x"], { run, request: commits(SHA), env: ENV })
+    expect(result.code).toBe(1)
+    expect(result.err).toContain(`Unknown option '${name}'`)
+    expect(calls).toEqual([])
   })
 })
 

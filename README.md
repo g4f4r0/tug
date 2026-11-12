@@ -50,7 +50,16 @@ With your own runners and the key service (below), the repository needs none of 
 
 ## Your own runners
 
-[runners/](runners/README.md) installs single-use self-hosted runners on a Debian host with Docker: one container per job, discarded after it, with no secrets and no access to the host or private networks. Its key service holds the model settings and answers only GitHub-signed tokens for Tug's own review job, so no runner ever holds the key. Never use self-hosted runners for public repositories.
+[runners/](runners/README.md) installs single-use self-hosted runners on a Debian host: one container per job, discarded after it, with no secrets and no access to the host or private networks. Its key service holds the model settings and answers only GitHub-signed tokens for Tug's own review job, so no runner ever holds the key. Never use self-hosted runners for public repositories.
+
+The host needs only Debian with SSH and passwordless `sudo`. `tug install` installs Docker and nftables, the runners and the key service, with the `TUG_*` settings of its own environment:
+
+```sh
+export TUG_APP_ID=123456 TUG_APP_PRIVATE_KEY="$(cat app.pem)" TUG_ACCOUNTS=my-user,my-org TUG_REVIEW_MODEL=openai/gpt-6.1-sol TUG_OPENAI_API_KEY=sk-...
+npx -y github:hellogafaro/tug#main install --host <ssh-host>
+```
+
+Any secrets tool's `run` wrapper works too, in place of the `export`.
 
 ## Follow up a pull request
 
