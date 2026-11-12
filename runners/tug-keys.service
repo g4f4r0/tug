@@ -4,11 +4,11 @@ Wants=network-online.target docker.service
 After=network-online.target docker.service
 
 [Service]
-User=@SECRETS_USER@
-Environment=TUG_KEYS_OWNERS=@OWNERS@
+User=@USER@
+EnvironmentFile=-/etc/tug/tug.env
 Environment="TUG_KEYS_WORKFLOWS=hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
 ExecStartPre=+/usr/sbin/nft -f /usr/local/lib/tug/egress.nft
-ExecStart=/usr/bin/infisical run --projectId @PROJECT@ --env @ENV@ --silent -- /usr/local/lib/tug/node/bin/tug keys --listen 172.30.99.1:8787
+ExecStart=@RUN@/usr/local/lib/tug/node/bin/tug keys --listen 172.30.99.1:8787
 Restart=always
 RestartSec=10
 

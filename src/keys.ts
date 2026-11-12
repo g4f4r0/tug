@@ -37,7 +37,7 @@ export async function verifyToken(token: string, config: Pick<KeysConfig, "owner
   if (claims.aud !== KEYS_AUDIENCE) throw new Error("wrong audience")
   if (typeof claims.exp !== "number" || claims.exp < seconds) throw new Error("expired")
   if (typeof claims.nbf === "number" && claims.nbf > seconds + 60) throw new Error("not valid yet")
-  if (!config.owners.includes(String(claims.repository_owner))) throw new Error(`owner ${String(claims.repository_owner)} not allowed`)
+  if (!config.owners.some((owner) => owner.toLowerCase() === String(claims.repository_owner).toLowerCase())) throw new Error(`owner ${String(claims.repository_owner)} not allowed`)
   if (!config.workflows.includes(String(claims.job_workflow_ref))) throw new Error(`workflow ${String(claims.job_workflow_ref)} not allowed`)
   return claims
 }
@@ -112,7 +112,7 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
 /** The key service's settings from its environment. */
 export function keysConfig(env: NodeJS.ProcessEnv = process.env): KeysConfig {
   const list = (value: string | undefined) => (value ?? "").split(/[\s,]+/u).filter(Boolean)
-  const missing = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "TUG_KEYS_OWNERS", "TUG_KEYS_WORKFLOWS"].filter((name) => !env[name])
+  const missing = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "TUG_OWNERS", "TUG_KEYS_WORKFLOWS"].filter((name) => !env[name])
   if (missing.length > 0) throw new Error(`Set ${missing.join(", ")}`)
-  return { upstream: env.LLM_BASE_URL!, key: env.LLM_API_KEY!, model: env.LLM_MODEL!, reasoningEffort: env.LLM_REASONING_EFFORT || undefined, owners: list(env.TUG_KEYS_OWNERS), workflows: list(env.TUG_KEYS_WORKFLOWS) }
+  return { upstream: env.LLM_BASE_URL!, key: env.LLM_API_KEY!, model: env.LLM_MODEL!, reasoningEffort: env.LLM_REASONING_EFFORT || undefined, owners: list(env.TUG_OWNERS), workflows: list(env.TUG_KEYS_WORKFLOWS) }
 }
