@@ -109,10 +109,6 @@ func (a *fakeAPI) RemoveRunner(_ context.Context, id int64) error {
 	return nil
 }
 
-type fakeCapacity struct{ max int }
-
-func (c *fakeCapacity) SetMaxRunners(count int) { c.max = count }
-
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -129,7 +125,7 @@ func testPool(max int) *pool {
 }
 
 func (p *pool) addScaler(url string) *scaler {
-	s := &scaler{pool: p, scope: scope{url: url}, client: &fakeAPI{}, listener: &fakeCapacity{}, runners: map[string]*runner{}}
+	s := &scaler{pool: p, scope: scope{url: url}, client: &fakeAPI{}, listening: true, runners: map[string]*runner{}}
 	p.mu.Lock()
 	p.scalers[url] = s
 	p.mu.Unlock()
@@ -168,9 +164,6 @@ func TestPoolCapIsSharedAndFreedSlotsGoToWaitingScopes(t *testing.T) {
 	b.want(2)
 	if a.count() != 2 || b.count() != 1 || d.running() != 3 {
 		t.Fatalf("want 2 + 1 runners under a cap of 3, got %d + %d (%d containers)", a.count(), b.count(), d.running())
-	}
-	if got := b.listener.(*fakeCapacity).max; got != 1 {
-		t.Fatalf("b should report capacity 1 (its runner, no free slot), got %d", got)
 	}
 
 	// One of a's jobs ends; b's waiting job takes the slot.

@@ -340,10 +340,6 @@ type jobSession interface {
 	AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error)
 }
 
-type capacity interface {
-	SetMaxRunners(count int)
-}
-
 type runner struct {
 	id      int
 	busy    bool
@@ -354,15 +350,15 @@ type runner struct {
 // scaler starts runners for one scope's scale set. It outlives a listener restart, so it keeps counting the runners
 // already started; mu guards everything below it.
 type scaler struct {
-	pool     *pool
-	scope    scope
-	mu       sync.Mutex
-	client   runnerAPI
-	session  jobSession
-	listener capacity
-	setID    int
-	desired  int
-	runners  map[string]*runner
+	pool      *pool
+	scope     scope
+	mu        sync.Mutex
+	client    runnerAPI
+	session   jobSession
+	listening bool
+	setID     int
+	desired   int
+	runners   map[string]*runner
 }
 
 func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
@@ -400,7 +396,7 @@ func (s *scaler) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage)
 func (s *scaler) fill(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.listener == nil {
+	if !s.listening {
 		return
 	}
 	for len(s.runners) < s.desired && s.pool.take() {
@@ -412,7 +408,6 @@ func (s *scaler) fill(ctx context.Context) {
 			break
 		}
 	}
-	s.listener.SetMaxRunners(len(s.runners) + s.pool.free())
 }
 
 // reap removes runners that waited too long for a job that was cancelled or went to another runner.
@@ -538,16 +533,18 @@ func (p *pool) listen(ctx context.Context, s *scaler) error {
 		return fmt.Errorf("session: %w", err)
 	}
 	defer session.Close(context.WithoutCancel(ctx))
-	l, err := listener.New(session, listener.Config{ScaleSetID: set.ID, MaxRunners: p.free()})
+	// Always the whole pool: GitHub assigns a scale set no jobs while it reports no room, and looks again only when
+	// another job is queued. Jobs past the free slots wait here, acquired, until release offers them one.
+	l, err := listener.New(session, listener.Config{ScaleSetID: set.ID, MaxRunners: p.cfg.max})
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.client, s.session, s.listener, s.setID = client, session, l, set.ID
+	s.client, s.session, s.listening, s.setID = client, session, true, set.ID
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		s.listener = nil
+		s.listening = false
 		s.mu.Unlock()
 	}()
 	slog.Info("Listening", "scope", sc.url, "scaleSet", set.ID)
