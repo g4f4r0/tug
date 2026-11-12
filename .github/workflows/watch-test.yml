@@ -4,4 +4,4 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - run: sleep 15 && exit 1
+      - run: sleep 15 && echo ok
