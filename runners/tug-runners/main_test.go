@@ -177,6 +177,18 @@ func TestPoolCapIsSharedAndFreedSlotsGoToWaitingScopes(t *testing.T) {
 	}
 }
 
+func TestEveryScopeReportsTheWholePoolEvenWhenFull(t *testing.T) {
+	newFakeDocker(t)
+	p := testPool(2)
+	p.addScaler("https://github.com/a").want(2)
+	if p.free() != 0 {
+		t.Fatalf("want a full pool, got %d free", p.free())
+	}
+	if got := p.listenerConfig(7); got.MaxRunners != 2 || got.ScaleSetID != 7 {
+		t.Fatalf("a waiting scope must report the whole pool of 2, got %+v", got)
+	}
+}
+
 func TestReapRemovesOnlyOldIdleRunnersPastDemand(t *testing.T) {
 	d := newFakeDocker(t)
 	p := testPool(4)

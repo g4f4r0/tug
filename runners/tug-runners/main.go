@@ -534,9 +534,7 @@ func (p *pool) listen(ctx context.Context, s *scaler) error {
 		return fmt.Errorf("session: %w", err)
 	}
 	defer session.Close(context.WithoutCancel(ctx))
-	// Always the whole pool: GitHub assigns a scale set no jobs while it reports no room, and looks again only when
-	// another job is queued. Jobs past the free slots wait here, acquired, until release offers them one.
-	l, err := listener.New(session, listener.Config{ScaleSetID: set.ID, MaxRunners: p.cfg.max})
+	l, err := listener.New(session, p.listenerConfig(set.ID))
 	if err != nil {
 		return err
 	}
@@ -550,6 +548,12 @@ func (p *pool) listen(ctx context.Context, s *scaler) error {
 	}()
 	slog.Info("Listening", "scope", sc.url, "scaleSet", set.ID)
 	return l.Run(ctx, s)
+}
+
+// listenerConfig always reports the whole pool: GitHub assigns a scale set no jobs while it reports no room, and looks
+// again only when another job is queued. Jobs past the free slots wait here, acquired, until release offers them one.
+func (p *pool) listenerConfig(setID int) listener.Config {
+	return listener.Config{ScaleSetID: setID, MaxRunners: p.cfg.max}
 }
 
 // adopt counts the runners an earlier run left behind, so a restart never stops a running job. A container that
