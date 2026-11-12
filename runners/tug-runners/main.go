@@ -1,21 +1,14 @@
 // tug-runners starts one single-use GitHub Actions runner, in Docker on the network tug, for each job queued for the
-// label tug in every account that has the Tug runners GitHub App installed and is listed in TUG_ACCOUNTS. It never
-// runs more than TUG_MAX_RUNNERS at once across all of them, which share the host's CPUs and memory evenly, so the host
-// should run nothing else. Organizations get one runner scale set each, in their Default runner group, which must not
-// allow public repositories; personal accounts get one per private repository the installation includes. No secret
-// enters a container: it gets only its single-use runner config and TUG_KEYS.
+// label tug in every account listed in TUG_ACCOUNTS, signed in as TUG_GITHUB_TOKEN's user. It never runs more than
+// TUG_MAX_RUNNERS at once across all of them, which share the host's CPUs and memory evenly, so the host should run
+// nothing else. Organizations get one runner scale set each, in their Default runner group, which must not allow
+// public repositories; the token's own user gets one per private repository it owns. No secret enters a container: it
+// gets only its single-use runner config and TUG_KEYS.
 package main
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -44,9 +37,7 @@ const (
 )
 
 type config struct {
-	appID   string
-	key     string
-	signer  *rsa.PrivateKey
+	token   string
 	owners  []string
 	max     int
 	label   string
@@ -61,11 +52,10 @@ type config struct {
 // runnerImage is GitHub's runner image; tug-cleanup.service pulls it again after removing unused images.
 const runnerImage = "ghcr.io/actions/actions-runner:latest"
 
-// loadConfig reads TUG_APP_ID, TUG_APP_PRIVATE_KEY, TUG_ACCOUNTS and optional TUG_MAX_RUNNERS (default 4).
+// loadConfig reads TUG_GITHUB_TOKEN, TUG_ACCOUNTS and optional TUG_MAX_RUNNERS (default 4).
 func loadConfig() (*config, error) {
 	c := &config{
-		appID:   strings.TrimSpace(os.Getenv("TUG_APP_ID")),
-		key:     normalizePEM(os.Getenv("TUG_APP_PRIVATE_KEY")),
+		token:   strings.TrimSpace(os.Getenv("TUG_GITHUB_TOKEN")),
 		label:   "tug",
 		image:   runnerImage,
 		network: "tug",
@@ -85,25 +75,10 @@ func loadConfig() (*config, error) {
 		}
 		c.max = max
 	}
-	if c.appID == "" || c.key == "" || len(c.owners) == 0 {
-		return nil, errors.New("TUG_APP_ID, TUG_APP_PRIVATE_KEY and TUG_ACCOUNTS are required")
+	if c.token == "" || len(c.owners) == 0 {
+		return nil, errors.New("TUG_GITHUB_TOKEN and TUG_ACCOUNTS are required")
 	}
 	c.cpus, c.memory = share(runtime.NumCPU(), hostMemory(), c.max)
-	block, _ := pem.Decode([]byte(c.key))
-	if block == nil {
-		return nil, errors.New("TUG_APP_PRIVATE_KEY is not a PEM key")
-	}
-	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		c.signer = key
-	} else if parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		key, ok := parsed.(*rsa.PrivateKey)
-		if !ok {
-			return nil, errors.New("TUG_APP_PRIVATE_KEY is not an RSA key")
-		}
-		c.signer = key
-	} else {
-		return nil, fmt.Errorf("TUG_APP_PRIVATE_KEY: %w", err)
-	}
 	return c, nil
 }
 
@@ -128,50 +103,9 @@ func hostMemory() int64 {
 	return 8 << 30
 }
 
-// normalizePEM rebuilds a PEM key whose line breaks were lost when it was pasted into a one-line field.
-func normalizePEM(key string) string {
-	key = strings.TrimSpace(key)
-	begin := strings.Index(key, "-----BEGIN ")
-	if begin < 0 {
-		return key
-	}
-	rest := key[begin+len("-----BEGIN "):]
-	typeEnd := strings.Index(rest, "-----")
-	if typeEnd < 0 {
-		return key
-	}
-	kind := rest[:typeEnd]
-	end := strings.Index(rest, "-----END "+kind+"-----")
-	if end < 0 {
-		return key
-	}
-	body := strings.Join(strings.Fields(rest[typeEnd+len("-----"):end]), "")
-	var lines []string
-	for len(body) > 64 {
-		lines, body = append(lines, body[:64]), body[64:]
-	}
-	lines = append(lines, body)
-	return "-----BEGIN " + kind + "-----\n" + strings.Join(lines, "\n") + "\n-----END " + kind + "-----\n"
-}
-
-// A scope is where one runner scale set lives: an organization, or a personal account's repository.
+// A scope is where one runner scale set lives: an organization, or a repository of the token's user.
 type scope struct {
-	url          string
-	installation int64
-}
-
-// appJWT signs the app's own short-lived token, for listing its installations.
-func (c *config) appJWT() (string, error) {
-	enc := base64.RawURLEncoding
-	now := time.Now().Unix()
-	claims, _ := json.Marshal(map[string]any{"iat": now - 60, "exp": now + 540, "iss": c.appID})
-	unsigned := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + enc.EncodeToString(claims)
-	digest := sha256.Sum256([]byte(unsigned))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, c.signer, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", err
-	}
-	return unsigned + "." + enc.EncodeToString(signature), nil
+	url string
 }
 
 // apiBase is GitHub's REST API; tests point it at a fake.
@@ -210,107 +144,138 @@ func runDocker(env []string, args ...string) ([]byte, error) {
 // docker is runDocker; tests replace it.
 var docker = runDocker
 
-func githubAPI(ctx context.Context, method, path, bearer string, into any) error {
+// apiError is a response GitHub refused, with its status.
+type apiError struct {
+	status  int
+	message string
+}
+
+func (e *apiError) Error() string { return e.message }
+
+// refused is GitHub denying the token access: unauthorized, forbidden, or hidden as not found.
+func refused(err error) bool {
+	var e *apiError
+	return errors.As(err, &e) && (e.status == http.StatusUnauthorized || e.status == http.StatusForbidden || e.status == http.StatusNotFound)
+}
+
+// githubAPI reads one REST API path as the token's user, and returns the response's headers.
+func githubAPI(ctx context.Context, path, token string, into any) (http.Header, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, apiBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+path, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 300))
-		return fmt.Errorf("%s %s: %d %s", method, path, res.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &apiError{res.StatusCode, fmt.Sprintf("GET %s: %d %s", path, res.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	return json.NewDecoder(res.Body).Decode(into)
+	return res.Header, json.NewDecoder(res.Body).Decode(into)
 }
 
-// discover lists the scopes to serve: every allowed installation's organization, or its private repositories.
-func (c *config) discover(ctx context.Context) ([]scope, error) {
-	jwt, err := c.appJWT()
+// missingScopes names the scopes the service needs that a classic token lacks. GitHub lists a classic token's scopes
+// in X-OAuth-Scopes; other tokens get no such header, and nothing to check.
+func missingScopes(header http.Header) []string {
+	values := header.Values("X-OAuth-Scopes")
+	if len(values) == 0 {
+		return nil
+	}
+	var granted, missing []string
+	for _, name := range strings.Split(strings.Join(values, ","), ",") {
+		granted = append(granted, strings.TrimSpace(name))
+	}
+	for _, name := range []string{"repo", "admin:org"} {
+		if !slices.Contains(granted, name) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// checkToken logs, once at startup, a token that can't sign in or lacks a scope the service needs.
+func (c *config) checkToken(ctx context.Context) {
+	var user struct{}
+	header, err := githubAPI(ctx, "/user", c.token, &user)
 	if err != nil {
+		slog.Error("Could not sign in with TUG_GITHUB_TOKEN", "error", err)
+	} else if missing := missingScopes(header); len(missing) > 0 {
+		slog.Error("TUG_GITHUB_TOKEN lacks scopes: it needs a classic token with repo and admin:org", "missing", strings.Join(missing, ","))
+	}
+}
+
+// discover lists the scopes to serve: each organization in TUG_ACCOUNTS whose runners the token can manage, and the
+// token user's own private repositories when that user is listed. GitHub refusing an account skips it; any other
+// failure fails the round, so the scopes already served stay served.
+func (c *config) discover(ctx context.Context) ([]scope, error) {
+	var user struct {
+		Login string `json:"login"`
+	}
+	if _, err := githubAPI(ctx, "/user", c.token, &user); err != nil {
 		return nil, err
 	}
-	type installation struct {
-		ID          int64           `json:"id"`
-		SuspendedAt json.RawMessage `json:"suspended_at"`
-		Account     struct {
-			Login string `json:"login"`
-			Type  string `json:"type"`
-		} `json:"account"`
-	}
-	var installations []installation
-	for page := 1; ; page++ {
-		var batch []installation
-		if err := githubAPI(ctx, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, &batch); err != nil {
-			return nil, err
-		}
-		installations = append(installations, batch...)
-		if len(batch) < 100 {
-			break
-		}
-	}
 	var scopes []scope
-	for _, inst := range installations {
-		login := inst.Account.Login
-		if !slices.Contains(c.owners, strings.ToLower(login)) {
-			slog.Warn("Ignoring an installation outside TUG_ACCOUNTS", "account", login)
-			continue
-		}
-		if len(inst.SuspendedAt) > 0 && string(inst.SuspendedAt) != "null" {
-			continue
-		}
-		var token struct {
-			Token string `json:"token"`
-		}
-		if err := githubAPI(ctx, http.MethodPost, fmt.Sprintf("/app/installations/%d/access_tokens", inst.ID), jwt, &token); err != nil {
-			slog.Error("Could not sign in to an installation", "account", login, "error", err)
-			continue
-		}
-		if inst.Account.Type == "Organization" {
-			var group struct {
-				AllowsPublic bool `json:"allows_public_repositories"`
-			}
-			if err := githubAPI(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/runner-groups/%d", login, defaultRunnerGroup), token.Token, &group); err != nil {
-				slog.Error("Could not read the Default runner group", "account", login, "error", err)
-				continue
-			}
-			if group.AllowsPublic {
-				slog.Error("Skipping an organization whose Default runner group allows public repositories", "account", login)
-				continue
-			}
-			scopes = append(scopes, scope{url: "https://github.com/" + login, installation: inst.ID})
-			continue
-		}
-		for page := 1; ; page++ {
-			var repos struct {
-				Repositories []struct {
+	for _, owner := range c.owners {
+		if owner == strings.ToLower(user.Login) {
+			for page := 1; ; page++ {
+				var repos []struct {
 					FullName string `json:"full_name"`
 					Private  bool   `json:"private"`
 					Archived bool   `json:"archived"`
-				} `json:"repositories"`
-			}
-			if err := githubAPI(ctx, http.MethodGet, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), token.Token, &repos); err != nil {
-				slog.Error("Could not list repositories", "account", login, "error", err)
-				break
-			}
-			for _, repo := range repos.Repositories {
-				// Never public: anyone can open a pull request there, and its code would run here.
-				if repo.Private && !repo.Archived {
-					scopes = append(scopes, scope{url: "https://github.com/" + repo.FullName, installation: inst.ID})
+				}
+				if _, err := githubAPI(ctx, fmt.Sprintf("/user/repos?affiliation=owner&visibility=private&per_page=100&page=%d", page), c.token, &repos); err != nil {
+					// A partial list would stop serving the repositories it missed.
+					return nil, fmt.Errorf("list %s's repositories: %w", user.Login, err)
+				}
+				for _, repo := range repos {
+					// Never public: anyone can open a pull request there, and its code would run here.
+					if repo.Private && !repo.Archived {
+						scopes = append(scopes, scope{url: "https://github.com/" + repo.FullName})
+					}
+				}
+				if len(repos) < 100 {
+					break
 				}
 			}
-			if len(repos.Repositories) < 100 {
-				break
-			}
+			continue
 		}
+		var account struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		}
+		if _, err := githubAPI(ctx, "/users/"+owner, c.token, &account); err != nil {
+			if !refused(err) {
+				return nil, err
+			}
+			slog.Error("Skipping an account GitHub doesn't show", "account", owner, "error", err)
+			continue
+		}
+		if account.Type != "Organization" {
+			slog.Error("Skipping another user's account: the token serves only its own user's repositories", "account", account.Login)
+			continue
+		}
+		var group struct {
+			AllowsPublic bool `json:"allows_public_repositories"`
+		}
+		if _, err := githubAPI(ctx, fmt.Sprintf("/orgs/%s/actions/runner-groups/%d", account.Login, defaultRunnerGroup), c.token, &group); err != nil {
+			if !refused(err) {
+				return nil, err
+			}
+			slog.Error("Skipping an organization whose runners the token can't manage: it needs an owner's token with admin:org", "account", account.Login, "error", err)
+			continue
+		}
+		if group.AllowsPublic {
+			slog.Error("Skipping an organization whose Default runner group allows public repositories", "account", account.Login)
+			continue
+		}
+		scopes = append(scopes, scope{url: "https://github.com/" + account.Login})
 	}
 	return scopes, nil
 }
@@ -526,10 +491,10 @@ func (p *pool) serve(ctx context.Context, sc scope) {
 
 func (p *pool) listen(ctx context.Context, s *scaler) error {
 	sc := s.scope
-	client, err := scaleset.NewClientWithGitHubApp(scaleset.ClientWithGitHubAppConfig{
-		GitHubConfigURL: sc.url,
-		GitHubAppAuth:   scaleset.GitHubAppAuth{ClientID: p.cfg.appID, InstallationID: sc.installation, PrivateKey: p.cfg.key},
-		SystemInfo:      scaleset.SystemInfo{System: "tug-runners"},
+	client, err := scaleset.NewClientWithPersonalAccessToken(scaleset.NewClientWithPersonalAccessTokenConfig{
+		GitHubConfigURL:     sc.url,
+		PersonalAccessToken: p.cfg.token,
+		SystemInfo:          scaleset.SystemInfo{System: "tug-runners"},
 	})
 	if err != nil {
 		return err
@@ -641,13 +606,14 @@ func main() {
 	p := &pool{cfg: cfg, scalers: map[string]*scaler{}, adopted: map[string][]string{}}
 	p.adopt()
 	slog.Info("Starting", "max", cfg.max, "cpus", cfg.cpus, "memory", cfg.memory, "accounts", strings.Join(cfg.owners, ","))
+	cfg.checkToken(ctx)
 
 	served := map[string]context.CancelFunc{}
 	var wg sync.WaitGroup
 	for {
 		scopes, err := cfg.discover(ctx)
 		if err != nil {
-			slog.Error("Could not list the app's installations", "error", err)
+			slog.Error("Could not find the accounts to serve", "error", err)
 		} else {
 			current := map[string]bool{}
 			for _, sc := range scopes {

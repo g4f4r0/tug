@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process"
-import { createPrivateKey } from "node:crypto"
 import type { Request } from "./forge/github.ts"
 import { keysConfig } from "./keys.ts"
 
@@ -29,24 +28,9 @@ const SHA = /^[0-9a-f]{40}$/u
 const SERVICES = ["tug-runners", "tug-keys", "tug-cleanup.timer"]
 const STATUS = `echo "services $(systemctl is-active ${SERVICES.join(" ")} | tr '\\n' ' ')"; echo "version $(cat /usr/local/lib/tug/VERSION 2>/dev/null)"; echo "running $(docker ps -q --filter label=tug.scope | wc -l)"`
 
-/** The GitHub App's key on one line, its line breaks as spaces, which the runner service puts back. */
-function oneLineKey(value: string): string {
-  // Line breaks may come real, as spaces, or escaped as `\n`, as dotenv files and CI secrets often hold them.
-  const pem = /-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/u.exec(value.replaceAll("\\n", "\n"))
-  const lines = pem ? [`-----BEGIN ${pem[1]}-----`, ...(pem[2]!.replace(/\s+/gu, "").match(/.{1,64}/gu) ?? []), `-----END ${pem[1]}-----`] : []
-  let type
-  try {
-    type = createPrivateKey(lines.join("\n")).asymmetricKeyType
-  } catch {
-    throw new HostError("TUG_APP_PRIVATE_KEY is not a PEM key")
-  }
-  if (type !== "rsa") throw new HostError("TUG_APP_PRIVATE_KEY is not an RSA key")
-  return lines.join(" ")
-}
-
 /** The settings the host's services read; nothing else in the environment leaves this machine. */
 const HOST_SETTINGS = [
-  "TUG_APP_ID", "TUG_APP_PRIVATE_KEY", "TUG_ACCOUNTS", "TUG_MAX_RUNNERS",
+  "TUG_GITHUB_TOKEN", "TUG_ACCOUNTS", "TUG_MAX_RUNNERS",
   "TUG_OPENAI_API_KEY", "TUG_OPENAI_BASE_URL", "TUG_ANTHROPIC_API_KEY", "TUG_ANTHROPIC_BASE_URL",
   "TUG_REVIEW_MODEL", "TUG_REVIEW_REASONING_EFFORT", "TUG_SECURITY_MODEL", "TUG_SECURITY_REASONING_EFFORT",
 ]
@@ -63,10 +47,9 @@ export function settingsFile(env: NodeJS.ProcessEnv): string {
   } catch (error) {
     throw new HostError((error as Error).message)
   }
-  for (const name of ["TUG_APP_ID", "TUG_APP_PRIVATE_KEY"]) if (!settings[name]?.trim()) throw new HostError(`Set ${name}`)
+  if (!settings.TUG_GITHUB_TOKEN?.trim()) throw new HostError("Set TUG_GITHUB_TOKEN")
   const max = settings.TUG_MAX_RUNNERS?.trim()
   if (max && !(Number(max) >= 1 && Number.isInteger(Number(max)))) throw new HostError("TUG_MAX_RUNNERS must be a positive number")
-  settings.TUG_APP_PRIVATE_KEY = oneLineKey(settings.TUG_APP_PRIVATE_KEY!)
   return Object.entries(settings)
     .map(([name, value]) => {
       if (/[\r\n]/u.test(value)) throw new HostError(`${name} has a line break`)
