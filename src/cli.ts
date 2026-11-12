@@ -1,9 +1,11 @@
-import { appendFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { parseArgs } from "node:util"
 import { Review } from "./contracts.ts"
 import { describeState } from "./core/state.ts"
 import { modelSettings } from "./engine.ts"
 import { client, pullState, token } from "./forge/github.ts"
+import { init } from "./init.ts"
 import { keysConfig, keysServer } from "./keys.ts"
 import { runMerge } from "./merge.ts"
 import { runReview } from "./review.ts"
@@ -17,11 +19,14 @@ const USAGE = `Usage:
   tug review <owner/repo#n | PR URL | n>
   tug merge <owner/repo#n | PR URL | n>
   tug keys [--listen <host:port>]
+  tug init [--merge] [--runs-on <label,...>]
   tug pr state <owner/repo#n | PR URL | n> [--require <check>]... [--ignore <check>]...
   tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--settle <s>] [--until-merged] [--require <check>]... [--ignore <check>]...
 
 tug review posts one review of the head (code and security) and its risk:* label, and fails on a new high finding.
 tug merge merges the head when tug.json allows it, or holds it with needs:human. It reads the review from TUG_REVIEW.
+tug init writes .github/workflows/tug.yml (tests, review, and merge with --merge) and tug.json in this directory.
+  --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
 tug pr state prints the pull request's state as JSON: MERGED, CLOSED, HELD, CONFLICTS, CHECKS, THREADS, PENDING or READY.
 tug pr watch stays quiet while it is PENDING, then prints the state once and exits:
@@ -69,6 +74,8 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
         timeout: { type: "string" },
         settle: { type: "string" },
         listen: { type: "string" },
+        merge: { type: "boolean" },
+        "runs-on": { type: "string" },
         "until-merged": { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -80,6 +87,21 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
   const { values, positionals } = parsed
   if (values.help) {
     io.out(`${USAGE}\n`)
+    return 0
+  }
+  if (positionals[0] === "init" && positionals.length === 1) {
+    const result = init(process.cwd(), { merge: values.merge === true, runsOn: (values["runs-on"] ?? "ubuntu-latest").split(",").map((label) => label.trim()).filter(Boolean) })
+    const taken = result.files.filter((file) => existsSync(file.path)).map((file) => file.path)
+    if (taken.length > 0) {
+      io.err(`${taken.join(", ")} already exists; nothing was written\n`)
+      return 1
+    }
+    for (const file of result.files) {
+      mkdirSync(dirname(file.path), { recursive: true })
+      writeFileSync(file.path, file.content)
+      io.out(`Wrote ${file.path}\n`)
+    }
+    for (const note of result.notes) io.err(`${note}\n`)
     return 0
   }
   if (positionals[0] === "keys" && positionals.length === 1) return keys(values.listen ?? "127.0.0.1:8787", io)
