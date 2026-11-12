@@ -21,6 +21,8 @@ export const PullState = z.strictObject({
   title: z.string(),
   author: z.string(),
   labels: z.array(z.string()),
+  /** Checks that concluded success, neutral or skipped. */
+  passed: z.array(z.string()),
   /** Checks that concluded failure, error, cancelled, timed_out, action_required, startup_failure or stale. */
   failed: z.array(z.string()),
   /** Checks not finished yet, and required checks the head does not have yet. */

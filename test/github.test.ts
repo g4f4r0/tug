@@ -69,6 +69,7 @@ describe("the pull request's state", () => {
       title: "Add the thing",
       author: "g4f4r0",
       labels: [],
+      passed: ["build"],
       failed: [],
       pending: [],
       threads: 0,

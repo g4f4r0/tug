@@ -3,7 +3,7 @@ import type { PullState, PullStateName } from "../src/contracts.ts"
 import { parseRef } from "../src/cli.ts"
 import { EXIT, watch } from "../src/watch.ts"
 
-const pull = (name: PullStateName): PullState => ({ version: 1, repo: "o/r", number: 1, state: name, head: "a", base: "main", title: "t", author: "u", labels: [], failed: [], pending: [], threads: 0, reasons: [] })
+const pull = (name: PullStateName): PullState => ({ version: 1, repo: "o/r", number: 1, state: name, head: "a", base: "main", title: "t", author: "u", labels: [], passed: [], failed: [], pending: [], threads: 0, reasons: [] })
 
 /** A fake clock: sleeping moves time forward. */
 function clock() {
@@ -22,6 +22,17 @@ describe("watch", () => {
       expect(result).toMatchObject({ exit: code, timedOut: false, state: { state: name } })
       expect(c.sleeps).toEqual([30_000, 30_000])
     }
+  })
+
+  it("keeps a head with no checks yet pending for the settle window, then trusts READY", async () => {
+    const c = clock()
+    const bare = await watch({ read: async () => pull("READY"), intervalMs: 30_000, timeoutMs: 0, settleMs: 60_000, ...c })
+    expect(bare.exit).toBe(0)
+    expect(c.sleeps).toEqual([30_000, 30_000])
+    const checked = clock()
+    const green = await watch({ read: async () => ({ ...pull("READY"), passed: ["test"] }), intervalMs: 30_000, timeoutMs: 0, settleMs: 60_000, ...checked })
+    expect(green.exit).toBe(0)
+    expect(checked.sleeps).toEqual([])
   })
 
   it("times out with exit 5 and the last pending state", async () => {

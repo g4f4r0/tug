@@ -5,7 +5,7 @@ import { EXIT, watch } from "./watch.ts"
 
 const USAGE = `Usage:
   tug pr state <owner/repo#n | PR URL | n> [--require <check>]... [--ignore <check>]...
-  tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--require <check>]... [--ignore <check>]...
+  tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--settle <s>] [--require <check>]... [--ignore <check>]...
 
 tug pr state prints the pull request's state as JSON: MERGED, CLOSED, HELD, CONFLICTS, CHECKS, THREADS, PENDING or READY.
 tug pr watch stays quiet while it is PENDING, then prints the state once and exits:
@@ -15,6 +15,7 @@ tug pr watch stays quiet while it is PENDING, then prints the state once and exi
 --ignore <check>    is not a check of the head
 --interval <s>      seconds between reads (default 30)
 --timeout <s>       seconds before exit 5 (default 3600; 0 never times out)
+--settle <s>        seconds a head with no checks yet stays pending, for checks to register after a push (default 60)
 
 The token comes from GITHUB_TOKEN or GH_TOKEN, else from \`gh auth token\`. A bare number uses GITHUB_REPOSITORY.`
 
@@ -49,6 +50,7 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
         ignore: { type: "string", multiple: true },
         interval: { type: "string" },
         timeout: { type: "string" },
+        settle: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
     })
@@ -67,11 +69,12 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
     return EXIT.USAGE
   }
 
-  let target, intervalMs: number, timeoutMs: number
+  let target, intervalMs: number, timeoutMs: number, settleMs: number
   try {
     target = parseRef(ref)
     intervalMs = seconds(values.interval, 30, "interval") * 1000
     timeoutMs = seconds(values.timeout, 3600, "timeout") * 1000
+    settleMs = seconds(values.settle, 60, "settle") * 1000
     if (intervalMs < 1000) throw new UsageError("--interval is at least 1 second")
   } catch (error) {
     io.err(`${(error as Error).message}\n`)
@@ -86,7 +89,7 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
       io.out(`${JSON.stringify(await read(), null, 2)}\n`)
       return 0
     }
-    const result = await watch({ read, intervalMs, timeoutMs })
+    const result = await watch({ read, intervalMs, timeoutMs, settleMs })
     io.out(`${JSON.stringify(result.state, null, 2)}\n`)
     io.err(`${result.timedOut ? "TIMEOUT · " : ""}${describeState(result.state)}\n`)
     return result.exit

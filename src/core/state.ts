@@ -43,7 +43,7 @@ export interface StateOptions {
 export function state(facts: PullFacts, options: StateOptions = {}): PullState {
   const ignore = new Set(options.ignore ?? [])
   const labels = facts.labels
-  const make = (name: PullStateName, rest: Pick<PullState, "failed" | "pending" | "threads" | "reasons">): PullState => ({
+  const make = (name: PullStateName, rest: Pick<PullState, "passed" | "failed" | "pending" | "threads" | "reasons">): PullState => ({
     version: VERSION,
     repo: facts.repo,
     number: facts.number,
@@ -55,21 +55,24 @@ export function state(facts: PullFacts, options: StateOptions = {}): PullState {
     labels,
     ...rest,
   })
-  const done = (name: PullStateName) => make(name, { failed: [], pending: [], threads: 0, reasons: [] })
+  const done = (name: PullStateName) => make(name, { passed: [], failed: [], pending: [], threads: 0, reasons: [] })
   if (facts.merged) return done("MERGED")
   if (facts.state === "closed") return done("CLOSED")
   if (facts.checks === undefined || facts.statuses === undefined || facts.threads === undefined) throw new Error(`${facts.repo}#${facts.number} is open, but its checks, statuses or threads were not read`)
 
+  const passed: string[] = []
   const failed: string[] = []
   const pending: string[] = []
   for (const run of facts.checks) {
     if (ignore.has(run.name)) continue
     if (run.status !== "completed") pending.push(run.name)
-    else if (!OK_CONCLUSIONS.includes(run.conclusion ?? "")) failed.push(run.name)
+    else if (OK_CONCLUSIONS.includes(run.conclusion ?? "")) passed.push(run.name)
+    else failed.push(run.name)
   }
   for (const status of facts.statuses) {
-    if (ignore.has(status.context) || status.state === "success") continue
-    if (status.state === "pending") pending.push(status.context)
+    if (ignore.has(status.context)) continue
+    if (status.state === "success") passed.push(status.context)
+    else if (status.state === "pending") pending.push(status.context)
     else failed.push(status.context)
   }
   const posted = new Set([...facts.checks.map((run) => run.name), ...facts.statuses.map((status) => status.context)])
@@ -86,7 +89,7 @@ export function state(facts: PullFacts, options: StateOptions = {}): PullState {
 
   const name: PullStateName =
     held.length > 0 ? "HELD" : conflicts ? "CONFLICTS" : failed.length > 0 ? "CHECKS" : facts.threads > 0 ? "THREADS" : facts.draft || unknown || pending.length > 0 ? "PENDING" : "READY"
-  return make(name, { failed, pending, threads: facts.threads, reasons })
+  return make(name, { passed, failed, pending, threads: facts.threads, reasons })
 }
 
 /** A short plain summary of a state and what holds it. */
