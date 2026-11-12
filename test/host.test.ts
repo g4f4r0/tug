@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { main, type Deps } from "../src/cli.ts"
 import type { Request } from "../src/forge/github.ts"
 import { GitHubError } from "../src/forge/github.ts"
@@ -234,5 +234,17 @@ describe("usage errors", () => {
     const result = await usage(argv)
     expect(result.code).toBe(1)
     expect(result.err).toBe(`${message}\n`)
+  })
+})
+
+describe("tug keys", () => {
+  it("names a missing setting in one line instead of a stack trace", async () => {
+    vi.stubEnv("TUG_ACCOUNTS", "")
+    try {
+      const result = await cli(["keys"], { run: fakeRun().run, request: commits(SHA) })
+      expect(result).toEqual({ code: 1, out: "", err: "Set TUG_ACCOUNTS\n" })
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

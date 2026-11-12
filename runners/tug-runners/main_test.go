@@ -23,6 +23,7 @@ import (
 type fakeDocker struct {
 	mu         sync.Mutex
 	containers map[string]chan struct{}
+	stopped    map[string]bool
 	ps         string
 	logs       map[string]string
 }
@@ -39,7 +40,7 @@ func TestMain(m *testing.M) {
 func newFakeDocker(*testing.T) *fakeDocker {
 	shared.mu.Lock()
 	defer shared.mu.Unlock()
-	shared.containers, shared.ps, shared.logs = map[string]chan struct{}{}, "", map[string]string{}
+	shared.containers, shared.stopped, shared.ps, shared.logs = map[string]chan struct{}{}, map[string]bool{}, "", map[string]string{}
 	return shared
 }
 
@@ -55,6 +56,7 @@ func (f *fakeDocker) stop(name string) {
 	if c, ok := f.containers[name]; ok {
 		close(c)
 		delete(f.containers, name)
+		f.stopped[name] = true
 	}
 }
 
@@ -70,10 +72,15 @@ func (f *fakeDocker) run(env []string, args ...string) ([]byte, error) {
 		f.add(args[slices.Index(args, "--name")+1])
 	case "wait":
 		f.mu.Lock()
-		c := f.containers[args[1]]
+		c, stopped := f.containers[args[1]], f.stopped[args[1]]
 		f.mu.Unlock()
-		if c != nil {
+		switch {
+		case c != nil:
 			<-c
+		case !stopped:
+			// A container of an earlier test, whose watch got here after the reset: it never exits, so its
+			// pool never frees a slot into this test's Docker.
+			select {}
 		}
 	case "rm":
 		f.stop(args[2])
