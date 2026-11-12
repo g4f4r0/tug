@@ -12,6 +12,7 @@ on:
         required: true
 jobs:
   merge:
+    name: squash or hold
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 10

@@ -19,6 +19,7 @@ on:
         required: false
 jobs:
   review:
+    name: code and security
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 30
