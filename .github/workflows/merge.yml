@@ -16,6 +16,8 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     permissions:
+      checks: read
+      statuses: read
       contents: write
       pull-requests: write
       issues: write

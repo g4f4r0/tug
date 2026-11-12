@@ -78,14 +78,14 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
     return EXIT.USAGE
   }
   const { values, positionals } = parsed
+  if (values.help) {
+    io.out(`${USAGE}\n`)
+    return 0
+  }
   if (positionals[0] === "keys" && positionals.length === 1) return keys(values.listen ?? "127.0.0.1:8787", io)
   if ((positionals[0] === "review" || positionals[0] === "merge") && positionals.length === 2) return job(positionals[0], positionals[1]!, io)
   const [group, command, ref, ...rest] = positionals
-  if (values.help || group !== "pr" || (command !== "state" && command !== "watch") || !ref || rest.length > 0) {
-    if (values.help) {
-      io.out(`${USAGE}\n`)
-      return 0
-    }
+  if (group !== "pr" || (command !== "state" && command !== "watch") || !ref || rest.length > 0) {
     io.err(`${USAGE}\n`)
     return EXIT.USAGE
   }
