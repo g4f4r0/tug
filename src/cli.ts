@@ -206,7 +206,14 @@ function keys(listen: string, io: { out: (text: string) => void; err: (text: str
     io.err("--listen takes host:port\n")
     return Promise.resolve(EXIT.USAGE)
   }
-  const server = keysServer(keysConfig(), { log: (line) => io.err(`${line}\n`) })
+  let config
+  try {
+    config = keysConfig()
+  } catch (error) {
+    io.err(`${(error as Error).message}\n`)
+    return Promise.resolve(1)
+  }
+  const server = keysServer(config, { log: (line) => io.err(`${line}\n`) })
   return new Promise((resolve) => {
     server.on("error", (error) => {
       io.err(`${error.message}\n`)
