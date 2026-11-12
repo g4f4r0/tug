@@ -8,7 +8,7 @@ Tug is an open-source PR review, security review and merge, running in CI on you
 
 Installing it takes three things:
 1. a small entry in the repo's CI, which `tug init` writes;
-2. `TUG_MODEL_URL`, `TUG_MODEL_KEY` and `TUG_REVIEW_MODEL` in the environment (any OpenAI-compatible API), and optionally `TUG_SECURITY_MODEL`;
+2. `TUG_REVIEW_MODEL` (`openai/<model>` or `anthropic/<model>`) and that provider's `TUG_OPENAI_API_KEY` or `TUG_ANTHROPIC_API_KEY` in the environment, and optionally a reasoning effort, a base URL (an OpenAI- or Anthropic-compatible proxy works too) and the security pass's own model and effort;
 3. optionally, `tug.json` at the repo root.
 
 Done means:
@@ -22,7 +22,7 @@ Done means:
 ```
 entry points:   GitHub Actions (review.yml, merge.yml) · CLI (tug review, tug merge, tug pr state, tug pr watch, tug init)
                                  │
-policy source:  tug.json ──► core (pure, no I/O) ◄── engines: api (OpenAI-compatible); later claude-code, codex, opencode
+policy source:  tug.json ──► core (pure, no I/O) ◄── engines: api (OpenAI, Anthropic); later claude-code, codex, opencode
                                  │
 forge adapter:  GitHub; later GitLab, Forgejo
 ```
@@ -32,7 +32,7 @@ forge adapter:  GitHub; later GitLab, Forgejo
    - `PullState`
    - `Review` (findings, risk, merge, reason)
    - `Policy`
-3. **Engines.** One interface: diff, files and rules in, `Review` out. v1 is `api`: a chat-completions call with structured JSON. Later engines run agent CLIs on subscriptions; check each provider's terms for CI use.
+3. **Engines.** One interface: diff, files and rules in, `Review` out. v1 is `api`: one call with structured JSON, to OpenAI's chat completions or Anthropic's Messages API. Later engines run agent CLIs on subscriptions; check each provider's terms for CI use.
 4. **Forge adapter.** Reads the PR, its checks and threads. Writes the review, inline comments, labels and the merge. v1 is GitHub only.
 5. **Review kinds.** `code` and `security`, each a prompt file (`prompts/code.md`, `prompts/security.md`) plus a name. A new kind is a new prompt file.
 6. **Entry points.** Actions and the CLI run the same code. A webhook server could be added later as another entry.
@@ -86,9 +86,8 @@ jobs:
   review:
     uses: hellogafaro/tug/.github/workflows/review.yml@v1
     secrets:                         # only Tug's own, never `inherit`
-      TUG_MODEL_URL: ${{ secrets.TUG_MODEL_URL }}
-      TUG_MODEL_KEY: ${{ secrets.TUG_MODEL_KEY }}
       TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}
+      TUG_OPENAI_API_KEY: ${{ secrets.TUG_OPENAI_API_KEY }}
   merge:
     needs: [test, review]
     uses: hellogafaro/tug/.github/workflows/merge.yml@v1
@@ -117,7 +116,7 @@ The agent that opened the PR runs `tug pr watch <repo>#<n>`, as pstack does with
 ## Our infrastructure (Hello Gafaro)
 
 1. Self-hosted runners on g4f4r0-server, ephemeral: a single-use runner config, one job per container, in the host's Docker on its own network `tug`, as a non-root user with no capabilities. They get no access to `~/.agents`, Infisical, `~/projects` or agent credentials, and an egress firewall keeps them off the host, the tailnet and private networks. The server has 16 cores, 31 GB of RAM and Docker.
-2. One pool, `tug`, for every job, and no secret in any container. (Changed on 2026-11-12 from two pools, `tug-ai` with injected model settings and `tug-ci` without: labels don't restrict which workflow uses a runner, so a PR's own workflow could target `tug-ai` and print the key.) A key service on the host holds the model settings from Infisical and forwards model calls only for requests that carry GitHub's OIDC token for Tug's own `review.yml` or `merge.yml`, at a pinned ref, on an allowed repository. Tug's jobs never run the PR's code, so that token stays out of the PR's reach.
+2. One pool, `tug`, for every job, and no secret in any container. (Changed on 2026-11-12 from two pools, `tug-ai` with injected model settings and `tug-ci` without: labels don't restrict which workflow uses a runner, so a PR's own workflow could target `tug-ai` and print the key.) A key service on the host holds the model settings from Infisical and makes a pass's model call only for requests that carry GitHub's OIDC token for Tug's own `review.yml` or `merge.yml`, at a pinned ref, on an allowed repository. Tug's jobs never run the PR's code, so that token stays out of the PR's reach.
 3. Organizations (`hellogafaro`, `Minicoton`, `VenezuelaTeAyuda`) register their runners at the org level. Each personal `g4f4r0` repo needs its own registration. Runners make outgoing connections only. Never use them for public repos.
 
 ## Decisions

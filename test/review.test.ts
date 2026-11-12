@@ -3,9 +3,9 @@ import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "vitest"
 import { z } from "zod"
 import type { Review } from "../src/contracts.ts"
-import { ask, modelSettings, parseModel } from "../src/engine.ts"
+import { ask, modelSettings } from "../src/engine.ts"
 import type { Request } from "../src/forge/github.ts"
-import { keysServer, verifyToken } from "../src/keys.ts"
+import { keysConfig, keysServer, verifyToken } from "../src/keys.ts"
 import { runMerge } from "../src/merge.ts"
 import { pullFiles } from "../src/forge/github.ts"
 import { combine, commentableLines, describePull, readMarker, render, writeMarker } from "../src/review.ts"
@@ -75,44 +75,104 @@ describe("reading the change", () => {
 })
 
 describe("the engine", () => {
-  const schema = z.strictObject({ ok: z.boolean() })
-  it("sends a strict JSON schema and the reasoning effort, and retries one bad answer", async () => {
-    const bodies: Record<string, unknown>[] = []
-    const answers = ["not json", JSON.stringify({ ok: true })]
-    const fake = (async (_url: string, init: RequestInit) => {
-      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
-      return new Response(JSON.stringify({ choices: [{ message: { content: answers.shift() } }] }))
+  const schema = z.strictObject({ ok: z.boolean(), line: z.number().int() })
+  const answerSchema = { type: "object", properties: { ok: { type: "boolean" }, line: { type: "integer" } }, required: ["ok", "line"], additionalProperties: false }
+  const good = JSON.stringify({ ok: true, line: 3 })
+  /** A fake fetch that records each call and answers from a list. */
+  const recorder = (answers: unknown[]) => {
+    const calls: { url: string; headers: Record<string, string>; body: Record<string, unknown> }[] = []
+    const request = (async (url: string, init: RequestInit) => {
+      calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) as Record<string, unknown> })
+      return new Response(JSON.stringify(answers.shift()))
     }) as unknown as typeof fetch
-    const settings = { baseUrl: "http://m/v1", model: "gpt", key: "k", reasoningEffort: "high" }
-    expect(await ask({ settings, system: "s", user: "u", schema, name: "t", request: fake, retryWaitMs: 0 })).toEqual({ ok: true })
-    expect(bodies).toHaveLength(2)
-    expect(bodies[0]).toMatchObject({ model: "gpt", reasoning_effort: "high", response_format: { type: "json_schema", json_schema: { strict: true, schema: { additionalProperties: false } } } })
-    await expect(ask({ settings, system: "s", user: "u", schema, name: "t", request: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch, retryWaitMs: 0 })).rejects.toThrow("500")
-  })
+    return { calls, request }
+  }
+  const openai = { provider: "openai" as const, baseUrl: "http://m/v1", model: "gpt", key: "k" }
+  const anthropic = { provider: "anthropic" as const, baseUrl: "https://api.anthropic.com", model: "claude-opus-5-5", key: "a" }
 
-  it("uses the key service with the job's OIDC token when TUG_KEYS is set", async () => {
-    const seen: string[] = []
-    const fake = (async (url: string) => {
-      seen.push(url)
-      return new Response(JSON.stringify({ value: "jwt" }))
-    }) as unknown as typeof fetch
-    const settings = modelSettings({ TUG_KEYS: "http://keys:8787/", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }, fake)
-    expect(settings.code.baseUrl).toBe("http://keys:8787/v1")
-    expect([settings.code.model, settings.security.model]).toEqual(["code", "security"])
-    expect(await (settings.security.key as () => Promise<string>)()).toBe("jwt")
-    expect(seen).toEqual(["https://t/?x=1&audience=tug"])
-    expect(() => modelSettings({ TUG_KEYS: "http://keys" })).toThrow("id-token: write")
-    expect(() => modelSettings({})).toThrow("Set TUG_MODEL_URL, TUG_MODEL_KEY, TUG_REVIEW_MODEL")
-  })
-
-  it("gives each pass its own model and effort, the security pass falling back to the review model", () => {
-    const env = { TUG_MODEL_URL: "http://m/v1/", TUG_MODEL_KEY: "k", TUG_REVIEW_MODEL: "gpt-6.1-sol:high" }
-    expect(modelSettings(env)).toEqual({
-      code: { baseUrl: "http://m/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" },
-      security: { baseUrl: "http://m/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" },
+  it("reads each pass's provider, model and effort, the security pass falling back to the review's", () => {
+    const env = { TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: "k" }
+    const review = { provider: "openai", baseUrl: "https://api.openai.com/v1", key: "k", model: "gpt-6.1-sol" }
+    expect(modelSettings(env)).toEqual({ code: review, security: review })
+    expect(modelSettings(env).code).not.toHaveProperty("reasoningEffort")
+    const both = { ...env, TUG_REVIEW_REASONING_EFFORT: "high", TUG_SECURITY_MODEL: "anthropic/claude-opus-5-5", TUG_ANTHROPIC_API_KEY: "a", TUG_ANTHROPIC_BASE_URL: "http://proxy/" }
+    expect(modelSettings(both)).toEqual({
+      code: { ...review, reasoningEffort: "high" },
+      security: { provider: "anthropic", baseUrl: "http://proxy", key: "a", model: "claude-opus-5-5", reasoningEffort: "high" },
     })
-    expect(modelSettings({ ...env, TUG_SECURITY_MODEL: "claude-opus-5:xhigh" }).security).toMatchObject({ model: "claude-opus-5", reasoningEffort: "xhigh" })
-    expect(parseModel("vendor/model:beta")).toEqual({ model: "vendor/model:beta" })
+    expect(modelSettings({ ...both, TUG_SECURITY_REASONING_EFFORT: "max" }).security).toMatchObject({ reasoningEffort: "max" })
+    expect(modelSettings({ ...env, TUG_REVIEW_MODEL: "openai/vendor/model:beta", TUG_OPENAI_BASE_URL: "http://p/v1/" }).code).toMatchObject({ baseUrl: "http://p/v1", model: "vendor/model:beta" })
+  })
+
+  it("names the setting that is missing or wrong", () => {
+    expect(() => modelSettings({})).toThrow("Set TUG_REVIEW_MODEL")
+    for (const model of ["gpt-6.1-sol", "google/gemini", "constructor/x", "openai/", "/gpt"]) expect(() => modelSettings({ TUG_REVIEW_MODEL: model, TUG_OPENAI_API_KEY: "k" })).toThrow(`TUG_REVIEW_MODEL must be openai/<model> or anthropic/<model>, not ${model}`)
+    expect(() => modelSettings({ TUG_REVIEW_MODEL: "anthropic/claude-opus-5-5", TUG_OPENAI_API_KEY: "k" })).toThrow("Set TUG_ANTHROPIC_API_KEY for anthropic/claude-opus-5-5")
+    expect(() => modelSettings({ TUG_REVIEW_MODEL: "anthropic/claude-opus-5-5", TUG_ANTHROPIC_API_KEY: "a", TUG_SECURITY_MODEL: "openai/gpt" })).toThrow("Set TUG_OPENAI_API_KEY for openai/gpt")
+    expect(() => modelSettings({ TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k", TUG_SECURITY_MODEL: "gpt" })).toThrow("TUG_SECURITY_MODEL must be")
+  })
+
+  it("calls OpenAI with a strict JSON schema and the effort only when set, and retries one bad answer", async () => {
+    const { calls, request } = recorder([{ choices: [{ message: { content: "not json" } }] }, { choices: [{ message: { content: good } }] }])
+    expect(await ask({ settings: { ...openai, reasoningEffort: "high" }, system: "s", user: "u", schema, name: "t", request, retryWaitMs: 0 })).toEqual({ ok: true, line: 3 })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.url).toBe("http://m/v1/chat/completions")
+    expect(calls[0]!.headers).toEqual({ authorization: "Bearer k", "content-type": "application/json" })
+    expect(calls[0]!.body).toEqual({
+      model: "gpt",
+      reasoning_effort: "high",
+      messages: [
+        { role: "system", content: "s" },
+        { role: "user", content: "u" },
+      ],
+      response_format: { type: "json_schema", json_schema: { name: "t", strict: true, schema: answerSchema } },
+    })
+    const plain = recorder([{ choices: [{ message: { content: good } }] }])
+    await ask({ settings: openai, system: "s", user: "u", schema, name: "t", request: plain.request, retryWaitMs: 0 })
+    expect(plain.calls[0]!.body).not.toHaveProperty("reasoning_effort")
+    await expect(ask({ settings: openai, system: "s", user: "u", schema, name: "t", request: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch, retryWaitMs: 0 })).rejects.toThrow("OpenAI answered 500: nope")
+  })
+
+  it("calls Anthropic's Messages API and reads the first text block", async () => {
+    const { calls, request } = recorder([{ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: good }] }])
+    expect(await ask({ settings: { ...anthropic, reasoningEffort: "xhigh" }, system: "s", user: "u", schema, name: "t", request, retryWaitMs: 0 })).toEqual({ ok: true, line: 3 })
+    expect(calls[0]!.url).toBe("https://api.anthropic.com/v1/messages")
+    expect(calls[0]!.headers).toEqual({ "x-api-key": "a", "anthropic-version": "2023-06-01", "content-type": "application/json" })
+    expect(calls[0]!.body).toEqual({
+      model: "claude-opus-5-5",
+      max_tokens: 64000,
+      system: "s",
+      messages: [{ role: "user", content: "u" }],
+      output_config: { format: { type: "json_schema", schema: answerSchema }, effort: "xhigh" },
+    })
+    const plain = recorder([{ stop_reason: "end_turn", content: [{ type: "text", text: good }] }])
+    await ask({ settings: anthropic, system: "s", user: "u", schema, name: "t", request: plain.request, retryWaitMs: 0 })
+    expect(plain.calls[0]!.body.output_config).toEqual({ format: { type: "json_schema", schema: answerSchema } })
+  })
+
+  it("counts an answer cut off at max_tokens as a failure, and retries it once", async () => {
+    const cut = { stop_reason: "max_tokens", content: [{ type: "text", text: '{"ok":' }] }
+    const failing = recorder([cut, cut])
+    await expect(ask({ settings: anthropic, system: "s", user: "u", schema, name: "t", request: failing.request, retryWaitMs: 0 })).rejects.toThrow("max_tokens")
+    expect(failing.calls).toHaveLength(2)
+    const recovering = recorder([cut, { stop_reason: "end_turn", content: [{ type: "text", text: good }] }])
+    expect(await ask({ settings: anthropic, system: "s", user: "u", schema, name: "t", request: recovering.request, retryWaitMs: 0 })).toEqual({ ok: true, line: 3 })
+  })
+
+  it("asks the key service with the job's OIDC token when TUG_KEYS is set and the job has no provider key", async () => {
+    const calls: { url: string; init?: RequestInit }[] = []
+    const fake = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify(url.startsWith("https://t/") ? { value: "jwt" } : { content: good }))
+    }) as unknown as typeof fetch
+    const env = { TUG_KEYS: "http://keys:8787/", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }
+    const settings = modelSettings(env, fake)
+    expect(await ask({ settings: settings.security, system: "s", user: "u", schema, name: "t", request: fake, retryWaitMs: 0 })).toEqual({ ok: true, line: 3 })
+    expect(calls.map((call) => call.url)).toEqual(["https://t/?x=1&audience=tug", "http://keys:8787/v1/ask"])
+    expect(calls[1]!.init!.headers).toMatchObject({ authorization: "Bearer jwt" })
+    expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ pass: "security", system: "s", user: "u", schema: answerSchema, name: "t" })
+    expect(modelSettings({ ...env, TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" }).code).toMatchObject({ provider: "openai", key: "k" })
+    expect(() => modelSettings({ TUG_KEYS: "http://keys" })).toThrow("id-token: write")
   })
 })
 
@@ -146,32 +206,64 @@ describe("the key service", () => {
     for (const [token, reason] of refusals) await expect(verifyToken(token, config, jwks, now)).rejects.toThrow(reason)
   })
 
-  it("forwards an accepted call with the real key, model and effort, and refuses the rest", async () => {
+  it("reads its settings from the environment", () => {
+    expect(keysConfig({ TUG_ACCOUNTS: "g4f4r0, hellogafaro", TUG_REVIEW_MODEL: "anthropic/claude-opus-5-5", TUG_ANTHROPIC_API_KEY: "a" })).toEqual({
+      models: { code: { provider: "anthropic", baseUrl: "https://api.anthropic.com", key: "a", model: "claude-opus-5-5" }, security: { provider: "anthropic", baseUrl: "https://api.anthropic.com", key: "a", model: "claude-opus-5-5" } },
+      owners: ["g4f4r0", "hellogafaro"],
+      workflows: config.workflows,
+    })
+    expect(() => keysConfig({ TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" })).toThrow("Set TUG_ACCOUNTS")
+  })
+
+  it("asks each pass's own provider with its key, model and effort, and refuses the rest", async () => {
     const upstream: { url: string; init: RequestInit }[] = []
     const fake = (async (url: string, init: RequestInit) => {
       if (url.endsWith("/jwks")) return new Response(JSON.stringify({ keys: [jwk] }))
       upstream.push({ url, init })
-      return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } })
+      if (url.includes("broken")) return new Response("down", { status: 503 })
+      const content = JSON.stringify({ ok: true })
+      return new Response(JSON.stringify(url.endsWith("/v1/messages") ? { stop_reason: "end_turn", content: [{ type: "text", text: content }] } : { choices: [{ message: { content } }] }))
     }) as unknown as typeof fetch
-    const server = keysServer({ ...config, upstream: "http://proxy/v1", key: "real-key", models: { code: { model: "gpt-6.1-sol", reasoningEffort: "high" }, security: { model: "claude-opus-5" } } }, { request: fake, log: () => {} })
+    const models = {
+      code: { provider: "openai" as const, baseUrl: "http://openai/v1", key: "real-openai", model: "gpt-6.1-sol", reasoningEffort: "high" },
+      security: { provider: "anthropic" as const, baseUrl: "http://anthropic", key: "real-anthropic", model: "claude-opus-5-5" },
+    }
+    const server = keysServer({ ...config, models }, { request: fake, log: () => {} })
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const schema = z.strictObject({ ok: z.boolean() })
+    const job = (pass: "code" | "security", token = jwt(claims)) => ask({ settings: { keys: base, pass, token: async () => token }, system: "s", user: "u", schema, name: "t", request: fetch, retryWaitMs: 0 })
+    const raw = (body: unknown, path = "/v1/ask") => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${jwt(claims)}` }, body: JSON.stringify(body) })
     try {
-      const call = (token: string, path = "/v1/chat/completions", model = "cheap") => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model, messages: [], reasoning_effort: "max" }) })
-      expect((await call(jwt(claims))).status).toBe(200)
-      expect(upstream).toHaveLength(1)
-      expect(upstream[0]!.url).toBe("http://proxy/v1/chat/completions")
-      expect(upstream[0]!.init.headers).toMatchObject({ authorization: "Bearer real-key" })
-      // Any model but security gets the review model; the caller's effort never survives.
-      expect(JSON.parse(String(upstream[0]!.init.body))).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "high", messages: [] })
-      expect((await call(jwt(claims), "/v1/chat/completions", "security")).status).toBe(200)
-      expect(JSON.parse(String(upstream[1]!.init.body))).toEqual({ model: "claude-opus-5", messages: [] })
-      upstream.length = 1
-      expect((await call(jwt({ ...claims, repository_owner: "x" }))).status).toBe(403)
-      expect((await call(jwt(claims), "/v1/models")).status).toBe(404)
-      expect(upstream).toHaveLength(1)
+      expect(await job("code")).toEqual({ ok: true })
+      expect(upstream[0]!.url).toBe("http://openai/v1/chat/completions")
+      expect(upstream[0]!.init.headers).toMatchObject({ authorization: "Bearer real-openai" })
+      expect(JSON.parse(String(upstream[0]!.init.body))).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high" })
+      expect(await job("security")).toEqual({ ok: true })
+      expect(upstream[1]!.url).toBe("http://anthropic/v1/messages")
+      expect(upstream[1]!.init.headers).toMatchObject({ "x-api-key": "real-anthropic" })
+      expect(JSON.parse(String(upstream[1]!.init.body))).toMatchObject({ model: "claude-opus-5-5", output_config: { format: { type: "json_schema" } } })
+      expect(JSON.parse(String(upstream[1]!.init.body)).output_config).not.toHaveProperty("effort")
+
+      const question = { system: "s", user: "u", schema: {}, name: "t" }
+      expect((await raw({ ...question, pass: "cheap" })).status).toBe(400)
+      expect((await raw({ ...question, pass: "code", model: "cheap" })).status).toBe(400)
+      expect((await raw("not an object")).status).toBe(400)
+      expect((await raw({ ...question, pass: "code" }, "/v1/chat/completions")).status).toBe(404)
+      await expect(job("code", jwt({ ...claims, repository_owner: "x" }))).rejects.toThrow("The key service answered 403")
+      expect(upstream).toHaveLength(2)
     } finally {
       server.close()
+    }
+
+    const broken = keysServer({ ...config, models: { ...models, code: { ...models.code, baseUrl: "http://broken/v1" } } }, { request: fake, log: () => {} })
+    await new Promise<void>((resolve) => broken.listen(0, "127.0.0.1", resolve))
+    try {
+      const response = await fetch(`http://127.0.0.1:${(broken.address() as AddressInfo).port}/v1/ask`, { method: "POST", headers: { authorization: `Bearer ${jwt(claims)}` }, body: JSON.stringify({ pass: "code", system: "s", user: "u", schema: {}, name: "t" }) })
+      expect(response.status).toBe(502)
+      expect(await response.json()).toEqual({ error: { message: "OpenAI answered 503: down" } })
+    } finally {
+      broken.close()
     }
   })
 })

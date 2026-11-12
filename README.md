@@ -21,7 +21,15 @@ This writes `.github/workflows/tug.yml`, with a test job from `package.json` (`t
 
 To take Tug off a repository, run `npx -y github:hellogafaro/tug#main remove --repo <owner/repo>`. It opens a pull request that deletes `.github/workflows/tug.yml` and `tug.json`, after you type the repository's name.
 
-Model settings are repository or organization secrets: `TUG_MODEL_URL` (any OpenAI-compatible API), `TUG_MODEL_KEY`, and `TUG_REVIEW_MODEL`, such as `gpt-6.1-sol:high` (a model, optionally with its reasoning effort). The security pass uses `TUG_SECURITY_MODEL` when set, else the review model. With your own runners and the key service (below), the repository needs none of them.
+Model settings are repository or organization secrets:
+
+1. `TUG_REVIEW_MODEL` is the provider and model, `openai/<model>` or `anthropic/<model>`, such as `openai/gpt-6.1-sol` or `anthropic/claude-opus-5-5`.
+2. `TUG_OPENAI_API_KEY` or `TUG_ANTHROPIC_API_KEY` is that provider's key.
+3. `TUG_OPENAI_BASE_URL` (default `https://api.openai.com/v1`) and `TUG_ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`) are optional. Either can point at an OpenAI- or Anthropic-compatible proxy.
+4. `TUG_REVIEW_REASONING_EFFORT`, such as `high`, is optional. Without it, the provider's default applies.
+5. `TUG_SECURITY_MODEL` and `TUG_SECURITY_REASONING_EFFORT` set the security pass. Each falls back to the review's.
+
+With your own runners and the key service (below), the repository needs none of them.
 
 ## tug.json
 

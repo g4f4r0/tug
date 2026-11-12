@@ -11,13 +11,27 @@ on:
         description: The review as JSON, for merge.yml
         value: ${{ jobs.review.outputs.review }}
     secrets:
-      TUG_MODEL_URL:
+      TUG_OPENAI_API_KEY:
         required: false
-      TUG_MODEL_KEY:
+      TUG_OPENAI_BASE_URL:
+        required: false
+      TUG_ANTHROPIC_API_KEY:
+        required: false
+      TUG_ANTHROPIC_BASE_URL:
         required: false
       TUG_REVIEW_MODEL:
         required: false
+      TUG_REVIEW_REASONING_EFFORT:
+        required: false
       TUG_SECURITY_MODEL:
+        required: false
+      TUG_SECURITY_REASONING_EFFORT:
+        required: false
+      # Accepted and ignored until every repository's tug.yml is regenerated: callers still pass them, and an
+      # undeclared secret fails the call.
+      TUG_MODEL_URL:
+        required: false
+      TUG_MODEL_KEY:
         required: false
 jobs:
   review:
@@ -37,13 +51,17 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the model key.
+      # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the provider settings.
       - id: review
         run: npx -y github:hellogafaro/tug#main review "$GITHUB_REPOSITORY#$PR"
         env:
           PR: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ github.token }}
-          TUG_MODEL_URL: ${{ secrets.TUG_MODEL_URL }}
-          TUG_MODEL_KEY: ${{ secrets.TUG_MODEL_KEY }}
+          TUG_OPENAI_API_KEY: ${{ secrets.TUG_OPENAI_API_KEY }}
+          TUG_OPENAI_BASE_URL: ${{ secrets.TUG_OPENAI_BASE_URL }}
+          TUG_ANTHROPIC_API_KEY: ${{ secrets.TUG_ANTHROPIC_API_KEY }}
+          TUG_ANTHROPIC_BASE_URL: ${{ secrets.TUG_ANTHROPIC_BASE_URL }}
           TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}
+          TUG_REVIEW_REASONING_EFFORT: ${{ secrets.TUG_REVIEW_REASONING_EFFORT }}
           TUG_SECURITY_MODEL: ${{ secrets.TUG_SECURITY_MODEL }}
+          TUG_SECURITY_REASONING_EFFORT: ${{ secrets.TUG_SECURITY_REASONING_EFFORT }}
