@@ -57,6 +57,12 @@ describe("the pull request's state", () => {
     return { state, waits, calls: t.calls }
   }
 
+  it("drops a cancelled run that a newer run of the same check superseded", async () => {
+    const runs = [{ id: 1, name: "test", status: "completed", conclusion: "cancelled" }, { id: 2, name: "test", status: "in_progress", conclusion: null }]
+    expect((await read({ runs })).state).toMatchObject({ state: "PENDING", failed: [], pending: ["test"] })
+    expect((await read({ runs: [runs[0]!] })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
+  })
+
   it("is ready when nothing holds the head back", async () => {
     const { state, calls } = await read()
     expect(state).toEqual({

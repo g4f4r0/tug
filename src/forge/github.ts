@@ -114,11 +114,17 @@ export async function readPull(input: { request: Request; repo: string; number: 
     }
     throw new GitHubError(`${repo}#${number} has more than ${MAX_PAGES * 100} ${key.replace("_", " ")}`)
   }
-  const checks = (await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")).map((run) => ({
-    name: str(run.name),
-    status: str(run.status),
-    conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
-  }))
+  const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
+  // A run that `concurrency` cancelled because a newer run of the same check started is superseded, not failed.
+  const newest = new Map<string, number>()
+  for (const run of runs) newest.set(str(run.name), Math.max(newest.get(str(run.name)) ?? 0, Number(run.id) || 0))
+  const checks = runs
+    .filter((run) => !(run.conclusion === "cancelled" && (Number(run.id) || 0) < (newest.get(str(run.name)) ?? 0)))
+    .map((run) => ({
+      name: str(run.name),
+      status: str(run.status),
+      conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
+    }))
   const statuses = (await all(`/repos/${repo}/commits/${head}/status`, "statuses")).map((status) => ({ context: str(status.context), state: str(status.state) }))
 
   const [owner, name] = repo.split("/") as [string, string]
