@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "vitest"
 import { z } from "zod"
 import type { Review } from "../src/contracts.ts"
-import { ask, modelSettings } from "../src/engine.ts"
+import { ask, modelSettings, parseModel } from "../src/engine.ts"
 import type { Request } from "../src/forge/github.ts"
 import { keysServer, verifyToken } from "../src/keys.ts"
 import { runMerge } from "../src/merge.ts"
@@ -97,11 +97,22 @@ describe("the engine", () => {
       return new Response(JSON.stringify({ value: "jwt" }))
     }) as unknown as typeof fetch
     const settings = modelSettings({ TUG_KEYS: "http://keys:8787/", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }, fake)
-    expect(settings.baseUrl).toBe("http://keys:8787/v1")
-    expect(await (settings.key as () => Promise<string>)()).toBe("jwt")
+    expect(settings.code.baseUrl).toBe("http://keys:8787/v1")
+    expect([settings.code.model, settings.security.model]).toEqual(["code", "security"])
+    expect(await (settings.security.key as () => Promise<string>)()).toBe("jwt")
     expect(seen).toEqual(["https://t/?x=1&audience=tug"])
     expect(() => modelSettings({ TUG_KEYS: "http://keys" })).toThrow("id-token: write")
-    expect(() => modelSettings({})).toThrow("Set LLM_BASE_URL, LLM_MODEL, LLM_API_KEY")
+    expect(() => modelSettings({})).toThrow("Set TUG_MODEL_URL, TUG_MODEL_KEY, TUG_REVIEW_MODEL")
+  })
+
+  it("gives each pass its own model and effort, the security pass falling back to the review model", () => {
+    const env = { TUG_MODEL_URL: "http://m/v1/", TUG_MODEL_KEY: "k", TUG_REVIEW_MODEL: "gpt-6.1-sol:high" }
+    expect(modelSettings(env)).toEqual({
+      code: { baseUrl: "http://m/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" },
+      security: { baseUrl: "http://m/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" },
+    })
+    expect(modelSettings({ ...env, TUG_SECURITY_MODEL: "claude-opus-5:xhigh" }).security).toMatchObject({ model: "claude-opus-5", reasoningEffort: "xhigh" })
+    expect(parseModel("vendor/model:beta")).toEqual({ model: "vendor/model:beta" })
   })
 })
 
@@ -142,16 +153,20 @@ describe("the key service", () => {
       upstream.push({ url, init })
       return new Response(JSON.stringify({ choices: [] }), { headers: { "content-type": "application/json" } })
     }) as unknown as typeof fetch
-    const server = keysServer({ ...config, upstream: "http://proxy/v1", key: "real-key", model: "gpt-6.1-sol", reasoningEffort: "high" }, { request: fake, log: () => {} })
+    const server = keysServer({ ...config, upstream: "http://proxy/v1", key: "real-key", models: { code: { model: "gpt-6.1-sol", reasoningEffort: "high" }, security: { model: "claude-opus-5" } } }, { request: fake, log: () => {} })
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     try {
-      const call = (token: string, path = "/v1/chat/completions") => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: "cheap", messages: [] }) })
+      const call = (token: string, path = "/v1/chat/completions", model = "cheap") => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model, messages: [], reasoning_effort: "max" }) })
       expect((await call(jwt(claims))).status).toBe(200)
       expect(upstream).toHaveLength(1)
       expect(upstream[0]!.url).toBe("http://proxy/v1/chat/completions")
       expect(upstream[0]!.init.headers).toMatchObject({ authorization: "Bearer real-key" })
+      // Any model but security gets the review model; the caller's effort never survives.
       expect(JSON.parse(String(upstream[0]!.init.body))).toEqual({ model: "gpt-6.1-sol", reasoning_effort: "high", messages: [] })
+      expect((await call(jwt(claims), "/v1/chat/completions", "security")).status).toBe(200)
+      expect(JSON.parse(String(upstream[1]!.init.body))).toEqual({ model: "claude-opus-5", messages: [] })
+      upstream.length = 1
       expect((await call(jwt({ ...claims, repository_owner: "x" }))).status).toBe(403)
       expect((await call(jwt(claims), "/v1/models")).status).toBe(404)
       expect(upstream).toHaveLength(1)

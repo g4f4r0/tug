@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { z } from "zod"
 import { parsePolicy, riskRank, RISKS, SEVERITIES, VERSION, Review, type Finding, type Risk } from "./contracts.ts"
-import { ask, type ModelSettings } from "./engine.ts"
+import { ask, type ModelSettings, type Pass } from "./engine.ts"
 import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
 
 export const KINDS = ["code", "security"] as const
@@ -148,7 +148,7 @@ export interface ReviewResult {
 }
 
 /** Reviews the pull request's head with every kind, posts one COMMENT review, and sets its `risk:*` label. */
-export async function runReview(input: { request: Request; repo: string; number: number; settings: ModelSettings; reviewer: string; promptsDir: URL; model?: typeof fetch }): Promise<ReviewResult> {
+export async function runReview(input: { request: Request; repo: string; number: number; settings: Record<Pass, ModelSettings>; reviewer: string; promptsDir: URL; model?: typeof fetch }): Promise<ReviewResult> {
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
   const done = await tugReviews(request, repo, number, input.reviewer)
@@ -160,7 +160,7 @@ export async function runReview(input: { request: Request; repo: string; number:
   const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, await pullComments(request, repo, number))
   const answers = Object.fromEntries(
     await Promise.all(
-      KINDS.map(async (kind) => [kind, await ask({ settings: input.settings, system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review`, request: input.model })] as const),
+      KINDS.map(async (kind) => [kind, await ask({ settings: input.settings[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review`, request: input.model })] as const),
     ),
   ) as Record<(typeof KINDS)[number], KindAnswer>
   const review = combine(pull.head, answers, earlier ? { ...earlier, findings: earlierFindings } : null, complete)

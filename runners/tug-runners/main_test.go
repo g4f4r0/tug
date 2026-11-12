@@ -325,8 +325,18 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	if want := []string{"https://github.com/HelloGafaro", "https://github.com/g4f4r0/private"}; !slices.Equal(urls, want) {
 		t.Fatalf("want %v, got %v", want, urls)
 	}
-	// Never even signs in to an installation outside TUG_OWNERS.
+	// Never even signs in to an installation outside TUG_ACCOUNTS.
 	if len(tokens) != 3 {
 		t.Fatalf("want tokens for the 3 allowed installations only, got %v", tokens)
+	}
+}
+
+func TestShareSplitsTheHostEvenly(t *testing.T) {
+	if cpus, memory := share(16, 32<<30, 6); cpus != "2.67" || memory != fmt.Sprint(int64(32<<30)/6) {
+		t.Fatalf("got %s CPUs, %s bytes", cpus, memory)
+	}
+	// Never below one CPU and 1 GiB, however many containers.
+	if cpus, memory := share(2, 2<<30, 8); cpus != "1.00" || memory != fmt.Sprint(int64(1<<30)) {
+		t.Fatalf("got %s CPUs, %s bytes", cpus, memory)
 	}
 }
