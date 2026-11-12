@@ -29,12 +29,16 @@ export async function token(env: NodeJS.ProcessEnv = process.env): Promise<strin
   throw new GitHubError("No GitHub token: set GITHUB_TOKEN, or sign in with `gh auth login`.")
 }
 
-/** A `Request` over fetch, against `GITHUB_API_URL` or api.github.com. */
-export function client(auth: string, options: { api?: string; fetch?: typeof fetch } = {}): Request {
+/**
+ * A `Request` over fetch, against `GITHUB_API_URL` or api.github.com. A read (a GET or a GraphQL query) is tried once
+ * more after a 5xx or a network error; a write never is, since it may have landed.
+ */
+export function client(auth: string, options: { api?: string; fetch?: typeof fetch; retryWaitMs?: number } = {}): Request {
   const api = (options.api ?? process.env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/u, "")
   const call = options.fetch ?? fetch
   return async <T>(method: string, path: string, init: { body?: unknown } = {}): Promise<T> => {
-    const response = await call(`${api}${path}`, {
+    const read = method === "GET" || (path === "/graphql" && /^\s*(query\b|\{)/u.test(String((init.body as Json | undefined)?.query)))
+    const send = () => call(`${api}${path}`, {
       method,
       headers: {
         accept: "application/vnd.github+json",
@@ -46,6 +50,15 @@ export function client(auth: string, options: { api?: string; fetch?: typeof fet
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       signal: AbortSignal.timeout(30_000),
     })
+    let response = await send().catch((error: unknown) => {
+      if (!read) throw error
+      return null
+    })
+    if (!response || (read && response.status >= 500)) {
+      await response?.body?.cancel()
+      await new Promise((resolve) => setTimeout(resolve, options.retryWaitMs ?? 2_000))
+      response = await send()
+    }
     const text = await response.text()
     if (!response.ok) {
       let message = text.slice(0, 300)

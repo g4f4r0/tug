@@ -207,4 +207,39 @@ describe("the GitHub client", () => {
     expect(seen[0]!.init.headers).toMatchObject({ authorization: "Bearer tok", "x-github-api-version": "2022-11-28" })
     await expect(request("GET", "/missing?page=1")).rejects.toMatchObject({ status: 404, message: "GitHub answered 404 to GET /missing: Not Found" })
   })
+
+  it("retries a read once after a 5xx or a network error, and never a write", async () => {
+    const flaky = (failures: (() => Response)[]) => {
+      let calls = 0
+      const fake = (async () => {
+        const failure = failures[calls++]
+        return failure ? failure() : new Response(JSON.stringify({ ok: true }))
+      }) as unknown as typeof fetch
+      return { request: client("tok", { api: "https://api.example", fetch: fake, retryWaitMs: 0 }), calls: () => calls }
+    }
+    const down = () => new Response("{}", { status: 502 })
+    const offline = (): Response => {
+      throw new TypeError("fetch failed")
+    }
+    const query = { body: { query: "query($n: Int!) { x }" } }
+    for (const failure of [down, offline]) {
+      const read = flaky([failure])
+      expect(await read.request("GET", "/repos/o/r")).toEqual({ ok: true })
+      expect(read.calls()).toBe(2)
+    }
+    const threads = flaky([down])
+    expect(await threads.request("POST", "/graphql", query)).toEqual({ ok: true })
+    expect(threads.calls()).toBe(2)
+    const twice = flaky([down, down])
+    await expect(twice.request("GET", "/repos/o/r")).rejects.toMatchObject({ status: 502 })
+    expect(twice.calls()).toBe(2)
+    for (const [method, path, body] of [["POST", "/repos/o/r/labels", {}], ["PUT", "/repos/o/r/pulls/1/merge", {}], ["DELETE", "/x", undefined], ["POST", "/graphql", { body: { query: "mutation { x }" } }]] as const) {
+      const write = flaky([down])
+      await expect(write.request(method, path, body)).rejects.toMatchObject({ status: 502 })
+      expect(write.calls()).toBe(1)
+    }
+    const notFound = flaky([() => new Response("{}", { status: 404 })])
+    await expect(notFound.request("GET", "/x")).rejects.toMatchObject({ status: 404 })
+    expect(notFound.calls()).toBe(1)
+  })
 })
