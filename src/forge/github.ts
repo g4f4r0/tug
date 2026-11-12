@@ -116,8 +116,11 @@ export async function readPull(input: { request: Request; repo: string; number: 
   }
   const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
   const superseded = await supersededSuites(request, repo, head)
+  const suite = (run: Json) => Number((run.check_suite as Json | undefined)?.id)
+  // A superseded check is dropped only when the newer run has a check of the same name to replace it.
+  const replaced = new Set(runs.filter((run) => !superseded.has(suite(run))).map((run) => str(run.name)))
   const checks = runs
-    .filter((run) => !superseded.has(Number((run.check_suite as Json | undefined)?.id)))
+    .filter((run) => !(superseded.has(suite(run)) && replaced.has(str(run.name))))
     .map((run) => ({
       name: str(run.name),
       status: str(run.status),
@@ -150,8 +153,8 @@ export async function pullState(input: { request: Request; repo: string; number:
 }
 
 /**
- * The check suites of workflow runs that `concurrency` cancelled because a newer run of the same workflow started on
- * this head: their checks are superseded, not failed. Without `actions: read`, none are, so those checks still fail.
+ * The check suites of workflow runs that `concurrency` cancelled because a newer run of the same workflow, for the same
+ * event, started on this head: their checks are superseded, not failed. Without `actions: read`, none are, so those checks still fail.
  */
 async function supersededSuites(request: Request, repo: string, head: string): Promise<Set<number>> {
   let runs: Json[]
@@ -160,9 +163,10 @@ async function supersededSuites(request: Request, repo: string, head: string): P
   } catch {
     return new Set()
   }
-  const newest = new Map<number, number>()
-  for (const run of runs) newest.set(Number(run.workflow_id), Math.max(newest.get(Number(run.workflow_id)) ?? 0, Number(run.id)))
-  return new Set(runs.filter((run) => run.conclusion === "cancelled" && Number(run.id) < (newest.get(Number(run.workflow_id)) ?? 0)).map((run) => Number(run.check_suite_id)))
+  const key = (run: Json) => `${String(run.workflow_id)} ${str(run.event)}`
+  const newest = new Map<string, number>()
+  for (const run of runs) newest.set(key(run), Math.max(newest.get(key(run)) ?? 0, Number(run.id)))
+  return new Set(runs.filter((run) => run.conclusion === "cancelled" && Number(run.id) < (newest.get(key(run)) ?? 0)).map((run) => Number(run.check_suite_id)))
 }
 
 export interface PullFile {

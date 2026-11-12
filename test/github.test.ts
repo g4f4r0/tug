@@ -64,11 +64,14 @@ describe("the pull request's state", () => {
 
   it("drops the checks of a workflow run that a newer run of the same workflow superseded", async () => {
     const runs = [{ name: "test", status: "completed", conclusion: "cancelled", check_suite: { id: 10 } }, { name: "test", status: "in_progress", conclusion: null, check_suite: { id: 20 } }]
-    const workflowRuns = [{ id: 1, workflow_id: 7, conclusion: "cancelled", check_suite_id: 10 }, { id: 2, workflow_id: 7, conclusion: null, check_suite_id: 20 }]
+    const workflowRuns = [{ id: 1, workflow_id: 7, event: "pull_request", conclusion: "cancelled", check_suite_id: 10 }, { id: 2, workflow_id: 7, event: "pull_request", conclusion: null, check_suite_id: 20 }]
     expect((await read({ runs, workflowRuns })).state).toMatchObject({ state: "PENDING", failed: [], pending: ["test"] })
     // Another workflow's cancelled run, or no actions: read, still fails.
     expect((await read({ runs, workflowRuns: [{ ...workflowRuns[0]!, workflow_id: 8 }, workflowRuns[1]!] })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
     expect((await read({ runs })).state).toMatchObject({ state: "CHECKS", failed: ["test"] })
+    // A newer run for another event, or without the same check, replaces nothing.
+    expect((await read({ runs, workflowRuns: [workflowRuns[0]!, { ...workflowRuns[1]!, event: "workflow_dispatch" }] })).state).toMatchObject({ failed: ["test"] })
+    expect((await read({ runs: [runs[0]!, { ...runs[1]!, name: "lint" }], workflowRuns })).state).toMatchObject({ failed: ["test"] })
   })
 
   it("is ready when nothing holds the head back", async () => {
