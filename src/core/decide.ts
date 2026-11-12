@@ -27,6 +27,9 @@ export function decide(input: { state: PullState; review: Review | null; policy:
   if (!passes(filters.authors, state.author, { caseless: true })) return { action: "hold", reason: `The author ${state.author} is not in merge.filters.authors.` }
   if (!passes(filters.branches, state.base)) return { action: "hold", reason: `The base branch ${state.base} is not in merge.filters.branches.` }
   if (files.length === 0) return { action: "hold", reason: "No changed files were read." }
+  // A pull request's own workflows run with a token that posts as the same bot, so one that changes them could forge a review.
+  const workflows = files.filter((file) => file.startsWith(".github/"))
+  if (workflows.length > 0) return { action: "hold", reason: `${workflows[0]} changes the repository's GitHub configuration.` }
   const outside = files.filter((file) => !passes(filters.paths, file))
   if (outside.length > 0) return { action: "hold", reason: `${outside.slice(0, 3).join(", ")}${outside.length > 3 ? ` and ${outside.length - 3} more` : ""} not in merge.filters.paths.` }
 

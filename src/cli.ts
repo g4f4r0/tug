@@ -1,12 +1,26 @@
 import { parseArgs } from "node:util"
 import { describeState } from "./core/state.ts"
+import { modelSettings } from "./engine.ts"
 import { client, pullState, token } from "./forge/github.ts"
+import { keysConfig, keysServer } from "./keys.ts"
+import { runMerge } from "./merge.ts"
+import { runReview } from "./review.ts"
 import { EXIT, watch } from "./watch.ts"
 
+const PROMPTS = new URL("../prompts/", import.meta.url)
+/** The account whose reviews Tug trusts: the Actions bot, or TUG_REVIEWER when run elsewhere. */
+const reviewer = () => process.env.TUG_REVIEWER || "github-actions[bot]"
+
 const USAGE = `Usage:
+  tug review <owner/repo#n | PR URL | n>
+  tug merge <owner/repo#n | PR URL | n>
+  tug keys [--listen <host:port>]
   tug pr state <owner/repo#n | PR URL | n> [--require <check>]... [--ignore <check>]...
   tug pr watch <owner/repo#n | PR URL | n> [--interval <s>] [--timeout <s>] [--settle <s>] [--until-merged] [--require <check>]... [--ignore <check>]...
 
+tug review posts one review of the head (code and security) and its risk:* label, and fails on a new high finding.
+tug merge merges the head when tug.json allows it, or holds it with needs:human.
+tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
 tug pr state prints the pull request's state as JSON: MERGED, CLOSED, HELD, CONFLICTS, CHECKS, THREADS, PENDING or READY.
 tug pr watch stays quiet while it is PENDING, then prints the state once and exits:
   0 ready or merged, 2 conflicts, 3 threads, 4 checks, 5 timeout, 6 held or closed, 7 query failure.
@@ -52,6 +66,7 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
         interval: { type: "string" },
         timeout: { type: "string" },
         settle: { type: "string" },
+        listen: { type: "string" },
         "until-merged": { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -61,6 +76,8 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
     return EXIT.USAGE
   }
   const { values, positionals } = parsed
+  if (positionals[0] === "keys" && positionals.length === 1) return keys(values.listen ?? "127.0.0.1:8787", io)
+  if ((positionals[0] === "review" || positionals[0] === "merge") && positionals.length === 2) return job(positionals[0], positionals[1]!, io)
   const [group, command, ref, ...rest] = positionals
   if (values.help || group !== "pr" || (command !== "state" && command !== "watch") || !ref || rest.length > 0) {
     if (values.help) {
@@ -99,4 +116,47 @@ export async function main(argv: string[], io: { out: (text: string) => void; er
     io.err(`${(error as Error).message}\n`)
     return EXIT.QUERY
   }
+}
+
+async function job(command: "review" | "merge", ref: string, io: { out: (text: string) => void; err: (text: string) => void }): Promise<number> {
+  let target
+  try {
+    target = parseRef(ref)
+  } catch (error) {
+    io.err(`${(error as Error).message}\n`)
+    return EXIT.USAGE
+  }
+  try {
+    const request = client(await token())
+    if (command === "review") {
+      const result = await runReview({ request, ...target, settings: modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS })
+      io.out(`${JSON.stringify(result.review, null, 2)}\n`)
+      io.err(`${result.posted ? "Posted" : "Already reviewed"} · risk ${result.review.risk} · merge ${result.review.merge ? "yes" : "no"} · ${result.review.findings.length} findings\n`)
+      return result.failed ? 1 : 0
+    }
+    const result = await runMerge({ request, ...target, reviewer: reviewer() })
+    io.out(`${JSON.stringify({ action: result.decision.action, merged: result.merged, reason: result.decision.reason, head: result.state.head }, null, 2)}\n`)
+    io.err(`${result.decision.action}${result.merged ? " · merged" : ""} · ${result.decision.reason}\n`)
+    return result.decision.action === "merge" && !result.merged ? 1 : 0
+  } catch (error) {
+    // Fails closed: nothing merges, and the check shows the error.
+    io.err(`${(error as Error).message}\n`)
+    return 2
+  }
+}
+
+function keys(listen: string, io: { out: (text: string) => void; err: (text: string) => void }): Promise<number> {
+  const at = /^(.+):(\d+)$/u.exec(listen)
+  if (!at) {
+    io.err("--listen takes host:port\n")
+    return Promise.resolve(EXIT.USAGE)
+  }
+  const server = keysServer(keysConfig(), { log: (line) => io.err(`${line}\n`) })
+  return new Promise((resolve) => {
+    server.on("error", (error) => {
+      io.err(`${error.message}\n`)
+      resolve(1)
+    })
+    server.listen(Number(at[2]), at[1], () => io.err(`Tug keys listening on ${listen}\n`))
+  })
 }

@@ -93,7 +93,7 @@ jobs:
 
 1. Triggers: `pull_request` with `opened`, `synchronize`, `reopened`, `ready_for_review`, `labeled` and `unlabeled`. Use `concurrency` per PR with `cancel-in-progress`. Skip drafts.
 2. `review` runs alongside the tests. It runs the code and security kinds in parallel and posts one COMMENT review with inline comments. It sets `risk:low|medium|high` and fails on a new high finding; a critical or high security finding counts as high. On a re-review it skips findings already raised and never lowers the risk.
-3. `merge` runs only after `test` and `review` pass. It reads `tug.json`, requires `tug pr state` to be READY and the filters to pass, and requires the review to have said merge. Then it runs `gh pr merge --squash --match-head-commit <sha>` and reads the PR back. Otherwise it adds `needs:human` and a comment.
+3. `merge` runs only after `test` and `review` pass. It reads `tug.json`, requires `tug pr state` to be READY and the filters to pass, and requires the review to have said merge. It never merges a PR that changes `.github/`: that PR's own workflows run with a token that posts as the same bot, so they could forge the review. Then it runs `gh pr merge --squash --match-head-commit <sha>` and reads the PR back. Otherwise it adds `needs:human` and a comment.
 4. CI belongs to the forge. Tug doesn't run CI commands itself. `tug init` writes a plain CI workflow when a repo has none: `npm ci`, `typecheck`, `lint`, `test` from `package.json`, or `shopify theme check`. It also adds the Tug jobs, and opens all of this as a PR.
 5. Labels: `risk:*`, `needs:human`, and `merge:hold` (set by a person). There are no `review:*` or `security:*` labels; the checks show the result. Gates read checks, never labels.
 6. Known limits:
@@ -111,7 +111,7 @@ The agent that opened the PR runs `tug pr watch <repo>#<n>`, as pstack does with
 
 ## Our infrastructure (Hello Gafaro)
 
-1. Self-hosted runners on g4f4r0-server, ephemeral: a single-use runner config, one job per container, in rootless Docker under the dedicated user `tug-runner`. They get no access to `~/.agents`, Infisical, `~/projects` or agent credentials, and an egress firewall keeps them off the host, the tailnet and private networks. The server has 16 cores, 31 GB of RAM and Docker.
+1. Self-hosted runners on g4f4r0-server, ephemeral: a single-use runner config, one job per container, in the host's Docker on its own network `tug`, as a non-root user with no capabilities. They get no access to `~/.agents`, Infisical, `~/projects` or agent credentials, and an egress firewall keeps them off the host, the tailnet and private networks. The server has 16 cores, 31 GB of RAM and Docker.
 2. One pool, `tug`, for every job, and no secret in any container. (Changed on 2026-11-12 from two pools, `tug-ai` with injected model settings and `tug-ci` without: labels don't restrict which workflow uses a runner, so a PR's own workflow could target `tug-ai` and print the key.) A key service on the host holds the model settings from Infisical and forwards model calls only for requests that carry GitHub's OIDC token for Tug's own `review.yml` or `merge.yml`, at a pinned ref, on an allowed repository. Tug's jobs never run the PR's code, so that token stays out of the PR's reach.
 3. Organizations (`hellogafaro`, `Minicoton`, `VenezuelaTeAyuda`) register their runners at the org level. Each personal `g4f4r0` repo needs its own registration. Runners make outgoing connections only. Never use them for public repos.
 
@@ -124,7 +124,7 @@ The agent that opened the PR runs `tug pr watch <repo>#<n>`, as pstack does with
 ## Phases
 
 1. Create the public `hellogafaro/tug` repo, with the core, contracts and GitHub adapter, plus `tug pr state` and `tug pr watch`. Port them from `opencode-plugins` main `f9314e2`: `opencode-github/src/state.ts` and its tests in `test/trigger.test.ts`. Use `gh` or `GITHUB_TOKEN` instead of app tokens. Switch the `development` skill's `pr-follow-up` playbook to `tug pr watch` once the user approves the exact Notion diff.
-2. Set up the two runner pools for `g4f4r0/opencode-plugins`.
+2. Set up the runner pool for `g4f4r0/opencode-plugins`.
 3. Build `review.yml` with the `api` engine, plus a CI workflow for `opencode-plugins`. Trial them on test PRs. The user decides how to avoid duplicate `risk:*` labels while the OpenCode review still runs.
 4. Build `merge.yml`, and prove one PR merges and one is held. Then switch off the OpenCode automations.
 5. Run `tug init` across our repos. Client theme repos get no `merge`.

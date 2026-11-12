@@ -109,6 +109,7 @@ describe("decide", () => {
     expect(run({ facts: { base: "master" } }).action).toBe("hold")
     expect(run({ files: ["README.md", "locales/en.json"] })).toMatchObject({ action: "hold", reason: "locales/en.json not in merge.filters.paths." })
     expect(run({ files: [] }).action).toBe("hold")
+    expect(run({ files: ["README.md", ".github/workflows/x.yml"] })).toMatchObject({ action: "hold", reason: ".github/workflows/x.yml changes the repository's GitHub configuration." })
   })
 
   it("holds without a review of this head", () => {

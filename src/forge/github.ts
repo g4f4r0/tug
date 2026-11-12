@@ -144,3 +144,82 @@ export async function readPull(input: { request: Request; repo: string; number: 
 export async function pullState(input: { request: Request; repo: string; number: number; wait?: (ms: number) => Promise<void> } & StateOptions): Promise<PullState> {
   return state(await readPull(input), input)
 }
+
+export interface PullFile {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+  /** Absent for binary files and patches GitHub won't show. */
+  patch?: string
+}
+
+/** The pull request's changed files, every page. */
+export async function pullFiles(request: Request, repo: string, number: number): Promise<PullFile[]> {
+  const files: PullFile[] = []
+  for (let page = 1; page <= 30; page++) {
+    const batch = await request<Json[]>("GET", `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`)
+    for (const file of batch) files.push({ path: str(file.filename), status: str(file.status), additions: Number(file.additions) || 0, deletions: Number(file.deletions) || 0, patch: typeof file.patch === "string" ? file.patch : undefined })
+    if (batch.length < 100) return files
+  }
+  throw new GitHubError(`${repo}#${number} has more than 3000 changed files`)
+}
+
+export interface PullInfo {
+  title: string
+  body: string
+  head: string
+  base: string
+  baseSha: string
+  author: string
+  draft: boolean
+}
+
+export async function pullInfo(request: Request, repo: string, number: number): Promise<PullInfo> {
+  const pull = await request<Json>("GET", `/repos/${repo}/pulls/${number}`)
+  const head = (pull.head as Json | undefined) ?? {}
+  const base = (pull.base as Json | undefined) ?? {}
+  return { title: str(pull.title), body: str(pull.body), head: str(head.sha), base: str(base.ref), baseSha: str(base.sha), author: str((pull.user as Json | undefined)?.login), draft: pull.draft === true }
+}
+
+/** A file's text at a ref, or null when it doesn't exist. */
+export async function fileAt(request: Request, repo: string, path: string, ref: string): Promise<string | null> {
+  try {
+    const file = await request<Json>("GET", `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`)
+    return Buffer.from(str(file.content), "base64").toString("utf8")
+  } catch (error) {
+    if ((error as GitHubError).status === 404) return null
+    throw error
+  }
+}
+
+export interface PostedReview {
+  author: string
+  commit: string
+  body: string
+}
+
+export async function pullReviews(request: Request, repo: string, number: number): Promise<PostedReview[]> {
+  const reviews: PostedReview[] = []
+  for (let page = 1; page <= 10; page++) {
+    const batch = await request<Json[]>("GET", `/repos/${repo}/pulls/${number}/reviews?per_page=100&page=${page}`)
+    for (const review of batch) reviews.push({ author: str((review.user as Json | undefined)?.login), commit: str(review.commit_id), body: str(review.body) })
+    if (batch.length < 100) return reviews
+  }
+  throw new GitHubError(`${repo}#${number} has more than 1000 reviews`)
+}
+
+/** Sets one label of a group, such as `risk:low`, removing the group's others. Creates the label when the repository lacks it. */
+export async function setLabel(request: Request, repo: string, number: number, label: string, labels: string[], color = "ededed"): Promise<void> {
+  const group = `${label.split(":")[0]}:`
+  for (const other of labels.filter((name) => name.startsWith(group) && name !== label)) {
+    await request("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(other)}`).catch((error: GitHubError) => {
+      if (error.status !== 404) throw error
+    })
+  }
+  if (labels.includes(label)) return
+  await request("POST", `/repos/${repo}/labels`, { body: { name: label, color } }).catch((error: GitHubError) => {
+    if (error.status !== 422) throw error
+  })
+  await request("POST", `/repos/${repo}/issues/${number}/labels`, { body: { labels: [label] } })
+}

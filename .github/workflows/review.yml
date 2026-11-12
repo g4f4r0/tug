@@ -1,0 +1,37 @@
+name: review
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner labels as JSON, such as '["self-hosted", "tug"]'
+        type: string
+        default: '"ubuntu-latest"'
+    secrets:
+      LLM_BASE_URL:
+        required: false
+      LLM_MODEL:
+        required: false
+      LLM_API_KEY:
+        required: false
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the model key.
+      - run: npx -y github:hellogafaro/tug#main review "$GITHUB_REPOSITORY#$PR"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
