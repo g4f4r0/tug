@@ -173,7 +173,7 @@ describe("merge", () => {
       if (route.endsWith("/pulls")) return []
       if (method === "GET" && route.endsWith("/git/refs/heads/docs/typo")) return { object: { sha: HEAD } }
       if (route.endsWith("/actions/runs")) return { workflow_runs: [] }
-      if (route.endsWith("/check-runs")) return { check_runs: overrides.runs ?? [{ name: "test", status: "completed", conclusion: "success" }, { name: "tug / merge", status: "in_progress", conclusion: null }] }
+      if (route.endsWith("/check-runs")) return { check_runs: overrides.runs ?? [{ name: "test", status: "completed", conclusion: "success" }, { name: "merge / squash or hold", status: "in_progress", conclusion: null }] }
       if (route.endsWith("/status")) return { statuses: [] }
       if (route === "/graphql") return { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }
       if (route.includes("/contents/tug.json")) {

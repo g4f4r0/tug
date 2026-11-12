@@ -15,21 +15,23 @@ export interface InitResult {
   notes: string[]
 }
 
-/** The test steps for a repository's root `package.json`, from its lockfile and scripts, or none. */
-function testSteps(dir: string): string[] | null {
+/** The test job's name and steps for a repository's root `package.json`, from its lockfile and scripts, or none. */
+function testSteps(dir: string): { name: string; steps: string[] } | null {
   const manifest = join(dir, "package.json")
   if (!existsSync(manifest)) return null
   const scripts = (JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {}
   const run = SCRIPTS.filter((name) => scripts[name])
   if (run.length === 0) return null
+  const name = `test / ${run.join(", ")}`
+  const steps = (install: string[], runner: string) => ({ name, steps: [...install, ...run.map((script) => `      - run: ${runner} ${script}`)] })
   const node = ["      - uses: actions/setup-node@v5", "        with:", "          node-version: 24"]
   if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb")))
-    return [...node, "      - uses: oven-sh/setup-bun@v2", "      - run: bun install --frozen-lockfile", ...run.map((name) => `      - run: bun run ${name}`)]
+    return steps([...node, "      - uses: oven-sh/setup-bun@v2", "      - run: bun install --frozen-lockfile"], "bun run")
   if (existsSync(join(dir, "pnpm-lock.yaml")))
-    return [...node, "      - run: corepack enable", "      - run: pnpm install --frozen-lockfile", ...run.map((name) => `      - run: pnpm run ${name}`)]
+    return steps([...node, "      - run: corepack enable", "      - run: pnpm install --frozen-lockfile"], "pnpm run")
   if (existsSync(join(dir, "yarn.lock")))
-    return [...node, "      - run: corepack enable", "      - run: yarn install --immutable", ...run.map((name) => `      - run: yarn run ${name}`)]
-  return [...node, `      - run: ${existsSync(join(dir, "package-lock.json")) ? "npm ci" : "npm install"}`, ...run.map((name) => `      - run: npm run ${name}`)]
+    return steps([...node, "      - run: corepack enable", "      - run: yarn install --immutable"], "yarn run")
+  return steps([...node, `      - run: ${existsSync(join(dir, "package-lock.json")) ? "npm ci" : "npm install"}`], "npm run")
 }
 
 /**
@@ -42,13 +44,13 @@ export function init(dir: string, options: InitOptions): InitResult {
   const workflows = join(dir, ".github", "workflows")
   const others = existsSync(workflows) ? readdirSync(workflows).filter((name) => /\.ya?ml$/u.test(name) && name !== "tug.yml") : []
   const runsOn = JSON.stringify(options.runsOn)
-  const steps = others.length > 0 ? null : testSteps(dir)
+  const test = others.length > 0 ? null : testSteps(dir)
   let merge = options.merge
   if (merge && others.length > 0) {
     merge = false
     notes.push(`${others.join(", ")} already runs CI. Tug's merge waits for every check, and checks from another workflow look pending, so add the review and merge jobs to that workflow instead; tug.yml only reviews.`)
   }
-  if (!steps && others.length === 0) notes.push("No package.json scripts (typecheck, lint, test) were found, so tug.yml has no test job.")
+  if (!test && others.length === 0) notes.push("No package.json scripts (typecheck, lint, test) were found, so tug.yml has no test job.")
 
   const lines = [
     "name: tug",
@@ -62,7 +64,7 @@ export function init(dir: string, options: InitOptions): InitResult {
     "  contents: read",
     "jobs:",
   ]
-  if (steps) lines.push("  test:", `    runs-on: ${runsOn}`, "    timeout-minutes: 20", "    steps:", "      - uses: actions/checkout@v5", ...steps)
+  if (test) lines.push("  test:", `    name: ${test.name}`, `    runs-on: ${runsOn}`, "    timeout-minutes: 20", "    steps:", "      - uses: actions/checkout@v5", ...test.steps)
   lines.push(
     "  review:",
     "    uses: hellogafaro/tug/.github/workflows/review.yml@main",
@@ -78,7 +80,7 @@ export function init(dir: string, options: InitOptions): InitResult {
   if (merge)
     lines.push(
       "  merge:",
-      `    needs: [${steps ? "test, " : ""}review]`,
+      `    needs: [${test ? "test, " : ""}review]`,
       "    uses: hellogafaro/tug/.github/workflows/merge.yml@main",
       "    with:",
       `      runs-on: '${runsOn}'`,

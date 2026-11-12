@@ -4,7 +4,7 @@ import { HUMAN_LABEL, state } from "./core/state.ts"
 import { fileAt, pullFiles, readPull, setLabel, touchedPaths, type Request } from "./forge/github.ts"
 
 /** The merge job's own check run, which is still running while it decides. A finished one named the same still counts. */
-const OWN_CHECK = /(^|\/ )merge$/u
+const OWN_CHECK = /(^|\/ )(merge|squash or hold)$/u
 
 export interface MergeResult {
   decision: Decision
