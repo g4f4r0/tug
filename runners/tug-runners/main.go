@@ -1,6 +1,6 @@
 // tug-runners starts one single-use GitHub Actions runner, in Docker on the network tug, for each job queued for the
-// label tug in every account that has the Tug runners GitHub App installed and is listed in TUG_OWNERS. It never runs
-// more than TUG_MAX_RUNNERS at once across all of them. Organizations get one runner scale set each, in their Default
+// label tug in every account that has the Tug runners GitHub App installed and is listed in TUG_ACCOUNTS. It never
+// runs more than TUG_MAX_RUNNERS at once across all of them, each with an equal share of the host's CPUs and memory. Organizations get one runner scale set each, in their Default
 // runner group, which must not allow public repositories; personal accounts get one per private repository the
 // installation includes. No secret enters a container: it gets only its single-use runner config and TUG_KEYS.
 package main
@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -56,38 +57,34 @@ type config struct {
 	pids    string
 }
 
-func env(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
-}
-
+// loadConfig reads TUG_APP_ID, TUG_APP_PRIVATE_KEY, TUG_ACCOUNTS and optional TUG_MAX_RUNNERS (default 4).
 func loadConfig() (*config, error) {
 	c := &config{
-		appID:   env("TUG_APP_ID", ""),
+		appID:   strings.TrimSpace(os.Getenv("TUG_APP_ID")),
 		key:     normalizePEM(os.Getenv("TUG_APP_PRIVATE_KEY")),
-		label:   env("TUG_LABEL", "tug"),
-		image:   env("TUG_IMAGE", "ghcr.io/actions/actions-runner:latest"),
-		network: env("TUG_NETWORK", "tug"),
-		keys:    env("TUG_KEYS", "http://172.30.99.1:8787"),
-		cpus:    env("TUG_CPUS", "4"),
-		memory:  env("TUG_MEMORY", "6g"),
-		pids:    env("TUG_PIDS", "4096"),
+		label:   "tug",
+		image:   "ghcr.io/actions/actions-runner:latest",
+		network: "tug",
+		keys:    "http://172.30.99.1:8787",
+		pids:    "4096",
 	}
-	for _, owner := range strings.Split(os.Getenv("TUG_OWNERS"), ",") {
-		if owner = strings.ToLower(strings.TrimSpace(owner)); owner != "" {
-			c.owners = append(c.owners, owner)
+	for _, account := range strings.Split(os.Getenv("TUG_ACCOUNTS"), ",") {
+		if account = strings.ToLower(strings.TrimSpace(account)); account != "" {
+			c.owners = append(c.owners, account)
 		}
 	}
-	max, err := strconv.Atoi(env("TUG_MAX_RUNNERS", "4"))
-	if err != nil || max < 1 {
-		return nil, fmt.Errorf("TUG_MAX_RUNNERS must be a positive number")
+	c.max = 4
+	if value := strings.TrimSpace(os.Getenv("TUG_MAX_RUNNERS")); value != "" {
+		max, err := strconv.Atoi(value)
+		if err != nil || max < 1 {
+			return nil, fmt.Errorf("TUG_MAX_RUNNERS must be a positive number")
+		}
+		c.max = max
 	}
-	c.max = max
 	if c.appID == "" || c.key == "" || len(c.owners) == 0 {
-		return nil, errors.New("TUG_APP_ID, TUG_APP_PRIVATE_KEY and TUG_OWNERS are required")
+		return nil, errors.New("TUG_APP_ID, TUG_APP_PRIVATE_KEY and TUG_ACCOUNTS are required")
 	}
+	c.cpus, c.memory = share(runtime.NumCPU(), hostMemory(), c.max)
 	block, _ := pem.Decode([]byte(c.key))
 	if block == nil {
 		return nil, errors.New("TUG_APP_PRIVATE_KEY is not a PEM key")
@@ -104,6 +101,27 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("TUG_APP_PRIVATE_KEY: %w", err)
 	}
 	return c, nil
+}
+
+// share splits the host's CPUs and memory evenly between max containers, as Docker's --cpus and --memory.
+func share(cpus int, memory int64, containers int) (string, string) {
+	perCPU := max(float64(cpus)/float64(containers), 1)
+	return strconv.FormatFloat(perCPU, 'f', 2, 64), strconv.FormatInt(max(memory/int64(containers), 1<<30), 10)
+}
+
+// hostMemory is the host's total memory in bytes, from /proc/meminfo, or 8 GiB when it can't be read.
+func hostMemory() int64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "MemTotal:" {
+				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return kb * 1024
+				}
+			}
+		}
+	}
+	return 8 << 30
 }
 
 // normalizePEM rebuilds a PEM key whose line breaks were lost when it was pasted into a one-line field.
@@ -219,7 +237,7 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 	for _, inst := range installations {
 		login := inst.Account.Login
 		if !slices.Contains(c.owners, strings.ToLower(login)) {
-			slog.Warn("Ignoring an installation outside TUG_OWNERS", "account", login)
+			slog.Warn("Ignoring an installation outside TUG_ACCOUNTS", "account", login)
 			continue
 		}
 		if len(inst.SuspendedAt) > 0 && string(inst.SuspendedAt) != "null" {
@@ -596,7 +614,7 @@ func main() {
 	}
 	p := &pool{cfg: cfg, scalers: map[string]*scaler{}, adopted: map[string][]string{}}
 	p.adopt()
-	slog.Info("Starting", "max", cfg.max, "owners", strings.Join(cfg.owners, ","))
+	slog.Info("Starting", "max", cfg.max, "cpus", cfg.cpus, "memory", cfg.memory, "accounts", strings.Join(cfg.owners, ","))
 
 	served := map[string]context.CancelFunc{}
 	var wg sync.WaitGroup

@@ -11,11 +11,13 @@ on:
         description: The review as JSON, for merge.yml
         value: ${{ jobs.review.outputs.review }}
     secrets:
-      LLM_BASE_URL:
+      TUG_MODEL_URL:
         required: false
-      LLM_MODEL:
+      TUG_MODEL_KEY:
         required: false
-      LLM_API_KEY:
+      TUG_REVIEW_MODEL:
+        required: false
+      TUG_SECURITY_MODEL:
         required: false
 jobs:
   review:
@@ -40,6 +42,7 @@ jobs:
         env:
           PR: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ github.token }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          TUG_MODEL_URL: ${{ secrets.TUG_MODEL_URL }}
+          TUG_MODEL_KEY: ${{ secrets.TUG_MODEL_KEY }}
+          TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}
+          TUG_SECURITY_MODEL: ${{ secrets.TUG_SECURITY_MODEL }}

@@ -8,13 +8,13 @@ Tug is an open-source PR review, security review and merge, running in CI on you
 
 Installing it takes three things:
 1. a small entry in the repo's CI, which `tug init` writes;
-2. `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` in the environment (any OpenAI-compatible API);
+2. `TUG_MODEL_URL`, `TUG_MODEL_KEY` and `TUG_REVIEW_MODEL` in the environment (any OpenAI-compatible API), and optionally `TUG_SECURITY_MODEL`;
 3. optionally, `tug.json` at the repo root.
 
 Done means:
 1. On `g4f4r0/opencode-plugins`, without OpenCode, a docs PR is reviewed and merged on its exact head.
 2. A risky PR is held with `needs:human`.
-3. Changing the three model settings switches provider with no other change.
+3. Changing the model settings switches provider with no other change.
 4. An agent in any harness follows up its own PR with `tug pr watch`.
 
 ## Architecture

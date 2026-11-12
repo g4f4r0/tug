@@ -12,31 +12,43 @@ export interface ModelSettings {
   reasoningEffort?: string
 }
 
+/** The review's two passes, each with its own model. */
+export type Pass = "code" | "security"
+
+const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+
+/** Splits `model:effort`, such as `gpt-6.1-sol:high`, into the model and its reasoning effort. */
+export function parseModel(value: string): { model: string; reasoningEffort?: string } {
+  const at = value.lastIndexOf(":")
+  const effort = at > 0 ? value.slice(at + 1) : ""
+  return EFFORTS.has(effort) ? { model: value.slice(0, at), reasoningEffort: effort } : { model: value }
+}
+
 /**
- * Reads the model settings: `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY`, plus an optional `LLM_REASONING_EFFORT`.
+ * Reads each pass's model settings: `TUG_MODEL_URL` (any OpenAI-compatible API), `TUG_MODEL_KEY`, `TUG_REVIEW_MODEL`
+ * and, for the security pass, `TUG_SECURITY_MODEL` or else the review model. A model is `model` or `model:effort`.
  * On a runner that sets `TUG_KEYS`, the URL of a Tug key service, calls go there with the job's GitHub OIDC token
- * instead, and the service adds the real key, model and effort.
+ * instead, naming only the pass, and the service adds the real key, model and effort.
  */
-export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typeof fetch = fetch): ModelSettings {
-  if (env.TUG_KEYS && !env.LLM_API_KEY) {
+export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typeof fetch = fetch): Record<Pass, ModelSettings> {
+  if (env.TUG_KEYS && !env.TUG_MODEL_KEY) {
     const url = env.ACTIONS_ID_TOKEN_REQUEST_URL
     const bearer = env.ACTIONS_ID_TOKEN_REQUEST_TOKEN
     if (!url || !bearer) throw new Error("TUG_KEYS is set, but the job has no OIDC token: grant it `id-token: write`")
-    return {
-      baseUrl: `${env.TUG_KEYS.replace(/\/$/u, "")}/v1`,
-      model: env.LLM_MODEL || "default",
-      key: async () => {
-        const response = await request(`${url}&audience=${KEYS_AUDIENCE}`, { headers: { authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(30_000) })
-        if (!response.ok) throw new Error(`GitHub answered ${response.status} to the OIDC token request`)
-        const value = ((await response.json()) as { value?: unknown }).value
-        if (typeof value !== "string") throw new Error("GitHub returned no OIDC token")
-        return value
-      },
+    const baseUrl = `${env.TUG_KEYS.replace(/\/$/u, "")}/v1`
+    const key = async () => {
+      const response = await request(`${url}&audience=${KEYS_AUDIENCE}`, { headers: { authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) throw new Error(`GitHub answered ${response.status} to the OIDC token request`)
+      const value = ((await response.json()) as { value?: unknown }).value
+      if (typeof value !== "string") throw new Error("GitHub returned no OIDC token")
+      return value
     }
+    return { code: { baseUrl, model: "code", key }, security: { baseUrl, model: "security", key } }
   }
-  const missing = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"].filter((name) => !env[name])
+  const missing = ["TUG_MODEL_URL", "TUG_MODEL_KEY", "TUG_REVIEW_MODEL"].filter((name) => !env[name])
   if (missing.length > 0) throw new Error(`Set ${missing.join(", ")}`)
-  return { baseUrl: env.LLM_BASE_URL!.replace(/\/$/u, ""), model: env.LLM_MODEL!, key: env.LLM_API_KEY!, reasoningEffort: env.LLM_REASONING_EFFORT || undefined }
+  const base = { baseUrl: env.TUG_MODEL_URL!.replace(/\/$/u, ""), key: env.TUG_MODEL_KEY! }
+  return { code: { ...base, ...parseModel(env.TUG_REVIEW_MODEL!) }, security: { ...base, ...parseModel(env.TUG_SECURITY_MODEL || env.TUG_REVIEW_MODEL!) } }
 }
 
 /**

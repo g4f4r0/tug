@@ -1,16 +1,18 @@
 import { createPublicKey, verify, type JsonWebKey } from "node:crypto"
 import { createServer, type IncomingMessage, type Server } from "node:http"
-import { KEYS_AUDIENCE } from "./engine.ts"
+import { KEYS_AUDIENCE, parseModel, type Pass } from "./engine.ts"
 
 const ISSUER = "https://token.actions.githubusercontent.com"
+/** The only workflow that may call: Tug's own review, from its main branch. */
+const REVIEW_WORKFLOW = "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
 
 export interface KeysConfig {
   /** The real model API, such as http://127.0.0.1:8317/v1. */
   upstream: string
   key: string
-  model: string
-  reasoningEffort?: string
-  /** Repository owners whose jobs may call, such as g4f4r0. */
+  /** Each pass's model and effort. */
+  models: Record<Pass, { model: string; reasoningEffort?: string }>
+  /** Accounts whose repositories' jobs may call, such as g4f4r0. */
   owners: string[]
   /** Workflows that may call, as `job_workflow_ref`, such as hellogafaro/tug/.github/workflows/review.yml@refs/heads/main. */
   workflows: string[]
@@ -59,8 +61,9 @@ const readBody = (request: IncomingMessage, limit: number) =>
 
 /**
  * Serves `POST /v1/chat/completions` for GitHub Actions jobs that prove, with their OIDC token, that they run one of
- * the allowed workflows for an allowed owner. It replaces the token with the real key and sets the model and effort,
- * so no runner ever holds them. Everything else is refused.
+ * the allowed workflows for an allowed owner. It replaces the token with the real key and sets the model and effort of
+ * the pass the request names as its model (`code` or `security`), so no runner ever holds them or picks another model.
+ * Everything else is refused.
  */
 export function keysServer(config: KeysConfig, options: { request?: typeof fetch; log?: (line: string) => void } = {}): Server {
   const request = options.request ?? fetch
@@ -90,8 +93,9 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
         return fail(403, "refused")
       }
       const body = JSON.parse((await readBody(incoming, 8_000_000)).toString("utf8")) as Record<string, unknown>
-      body.model = config.model
-      if (config.reasoningEffort) body.reasoning_effort = config.reasoningEffort
+      const chosen = config.models[body.model === "security" ? "security" : "code"]
+      body.model = chosen.model
+      if (chosen.reasoningEffort) body.reasoning_effort = chosen.reasoningEffort
       else delete body.reasoning_effort
       const upstream = await request(`${config.upstream.replace(/\/$/u, "")}/chat/completions`, {
         method: "POST",
@@ -109,10 +113,16 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
   })
 }
 
-/** The key service's settings from its environment. */
+/** The key service's settings from its environment, named as in `modelSettings`, plus `TUG_ACCOUNTS`. */
 export function keysConfig(env: NodeJS.ProcessEnv = process.env): KeysConfig {
-  const list = (value: string | undefined) => (value ?? "").split(/[\s,]+/u).filter(Boolean)
-  const missing = ["LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "TUG_OWNERS", "TUG_KEYS_WORKFLOWS"].filter((name) => !env[name])
+  const missing = ["TUG_MODEL_URL", "TUG_MODEL_KEY", "TUG_REVIEW_MODEL", "TUG_ACCOUNTS"].filter((name) => !env[name])
   if (missing.length > 0) throw new Error(`Set ${missing.join(", ")}`)
-  return { upstream: env.LLM_BASE_URL!, key: env.LLM_API_KEY!, model: env.LLM_MODEL!, reasoningEffort: env.LLM_REASONING_EFFORT || undefined, owners: list(env.TUG_OWNERS), workflows: list(env.TUG_KEYS_WORKFLOWS) }
+  const review = parseModel(env.TUG_REVIEW_MODEL!)
+  return {
+    upstream: env.TUG_MODEL_URL!,
+    key: env.TUG_MODEL_KEY!,
+    models: { code: review, security: env.TUG_SECURITY_MODEL ? parseModel(env.TUG_SECURITY_MODEL) : review },
+    owners: env.TUG_ACCOUNTS!.split(/[\s,]+/u).filter(Boolean),
+    workflows: [REVIEW_WORKFLOW],
+  }
 }
