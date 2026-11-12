@@ -151,13 +151,17 @@ interface ReviewResult {
 export async function runReview(input: { request: Request; repo: string; number: number; settings: Record<Pass, PassSettings>; reviewer: string; promptsDir: URL }): Promise<ReviewResult> {
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
-  const done = await tugReviews(request, repo, number, input.reviewer)
+  const [done, policyText, files, conversation] = await Promise.all([
+    tugReviews(request, repo, number, input.reviewer),
+    // The policy comes from the base branch, so a pull request can't loosen its own review.
+    fileAt(request, repo, "tug.json", pull.baseSha),
+    pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles),
+    pullComments(request, repo, number),
+  ])
   const earlier = done.at(-1) ?? null
   const earlierFindings = done.flatMap((review) => review.findings)
-  // The policy comes from the base branch, so a pull request can't loosen its own review.
-  const policy = parsePolicy(await fileAt(request, repo, "tug.json", pull.baseSha))
-  const files = await pullFiles(request, repo, pull.baseSha, pull.head, pull.changedFiles)
-  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, await pullComments(request, repo, number))
+  const policy = parsePolicy(policyText)
+  const { text, complete } = describePull(pull, files, policy.rules ?? [], earlierFindings, conversation)
   const answers = Object.fromEntries(
     await Promise.all(
       KINDS.map(async (kind) => [kind, await ask({ settings: input.settings[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review` })] as const),

@@ -43,6 +43,7 @@ docker network inspect tug >/dev/null 2>&1 ||
 install -d -m 0755 /usr/local/lib/tug /etc/tug
 [[ ! -e "$here/../VERSION" ]] || install -m 0644 "$here/../VERSION" /usr/local/lib/tug/VERSION
 build=$(mktemp -d)
+trap 'rm -rf "$build"' EXIT
 # The key service: Tug's source, which Node runs as is, with its runtime dependency installed in Node's own image, so
 # the host needs no Node.
 mkdir "$build/app"
@@ -55,7 +56,6 @@ cp -r "$build/app" /usr/local/lib/tug/app
 docker run --rm -v "$here/tug-runners:/src:ro" -v "$build:/out" -w /src -e CGO_ENABLED=0 golang:1.27 \
   go build -trimpath -ldflags=-s -o /out/tug-runners . >&2
 install -m 0755 "$build/tug-runners" /usr/local/lib/tug/tug-runners
-rm -rf "$build"
 
 install -m 0644 "$here/egress.nft" /usr/local/lib/tug/egress.nft
 for unit in tug-runners tug-keys; do

@@ -114,8 +114,12 @@ export async function readPull(input: { request: Request; repo: string; number: 
     }
     throw new GitHubError(`${repo}#${number} has more than ${MAX_PAGES * 100} ${key.replace("_", " ")}`)
   }
-  const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
-  const superseded = await supersededSuites(request, repo, head)
+  const [runs, superseded, statusList, threads] = await Promise.all([
+    all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs"),
+    supersededSuites(request, repo, head),
+    all(`/repos/${repo}/commits/${head}/status`, "statuses"),
+    unresolvedThreads(request, repo, number),
+  ])
   const suite = (run: Json) => Number((run.check_suite as Json | undefined)?.id)
   // A superseded check is dropped only when the newer run has a check of the same name to replace it.
   const replaced = new Set(runs.filter((run) => !superseded.has(suite(run))).map((run) => str(run.name)))
@@ -126,8 +130,12 @@ export async function readPull(input: { request: Request; repo: string; number: 
       status: str(run.status),
       conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
     }))
-  const statuses = (await all(`/repos/${repo}/commits/${head}/status`, "statuses")).map((status) => ({ context: str(status.context), state: str(status.state) }))
+  const statuses = statusList.map((status) => ({ context: str(status.context), state: str(status.state) }))
+  return { ...read, checks, statuses, threads }
+}
 
+/** The pull request's unresolved review threads, every page read. */
+async function unresolvedThreads(request: Request, repo: string, number: number): Promise<number> {
   const [owner, name] = repo.split("/") as [string, string]
   let threads = 0
   let after: string | null = null
@@ -141,10 +149,9 @@ export async function readPull(input: { request: Request; repo: string; number: 
     const found = graph.data?.repository?.pullRequest?.reviewThreads
     if (!found) throw new GitHubError(`GitHub returned no review threads for ${repo}#${number}`)
     threads += (found.nodes ?? []).filter((node) => node.isResolved !== true).length
-    if (!found.pageInfo?.hasNextPage) break
+    if (!found.pageInfo?.hasNextPage) return threads
     after = found.pageInfo.endCursor ?? null
   }
-  return { ...read, checks, statuses, threads }
 }
 
 /** Reads a pull request and names its state. */

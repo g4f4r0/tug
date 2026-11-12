@@ -36,7 +36,7 @@ function cli(argv: string[], deps: Deps) {
   return done.then((code) => ({ code, out: out.join(""), err: err.join("") }))
 }
 
-const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "box", command], input })
+const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "box", command], input })
 const FETCH = `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${SHA} > ~/tug/VERSION`
 const SETTINGS = "sudo install -d -m 0755 /etc/tug && sudo install -m 0600 /dev/stdin /etc/tug/tug.env"
 const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'

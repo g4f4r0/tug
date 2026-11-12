@@ -77,7 +77,7 @@ export function settingsFile(env: NodeJS.ProcessEnv): string {
 
 /** Runs a command on the host and returns its output, or throws with what it said. */
 function remote(run: Run, host: string, command: string, input?: string | Buffer): string {
-  const result = run("ssh", ["-o", "BatchMode=yes", host, command], input)
+  const result = run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", host, command], input)
   if (result.status !== 0) throw new HostError(`${host}: ${result.stderr.trim() || result.stdout.trim() || `ssh exited ${result.status}`}`)
   return result.stdout
 }
