@@ -43,6 +43,15 @@ describe("watch", () => {
     expect(c.sleeps).toHaveLength(5)
   })
 
+  it("with untilMerged, stays quiet while READY and exits on the merge or a new blocker", async () => {
+    for (const [name, code] of [["MERGED", 0], ["HELD", 6], ["THREADS", 3]] as [PullStateName, number][]) {
+      const states = [pull("PENDING"), pull("READY"), pull(name)]
+      const c = clock()
+      expect(await watch({ read: async () => states.shift()!, intervalMs: 30_000, timeoutMs: 0, untilMerged: true, ...c })).toMatchObject({ exit: code, state: { state: name } })
+      expect(c.sleeps).toHaveLength(2)
+    }
+  })
+
   it("times out with exit 5 and the last pending state", async () => {
     const c = clock()
     const result = await watch({ read: async () => pull("PENDING"), intervalMs: 30_000, timeoutMs: 70_000, ...c })
