@@ -1,51 +1,57 @@
 # Tug
 
-Tug reviews pull requests for bugs and security issues with the model you choose, and merges the safe ones. It runs as jobs in your repository's GitHub Actions, with no server, app or webhook of its own. [Your own runners](#your-own-runners) are optional.
-
-Tug is in beta (0.0.1). Workflows run Tug from `main`.
-
-Run the CLI with Node 24 or later:
-
-```sh
-npx -y github:hellogafaro/tug#main <command>
-```
-
-The examples below write `tug` for that.
+Tug reviews pull requests for bugs and security issues with the model you choose, and merges the safe ones. It runs as jobs in your repository's GitHub Actions. Tug is in beta (0.0.1), and workflows run it from `main`.
 
 ## How it works
 
-1. The `review` job sends the pull request's title, body, comments, patches and rules to the model twice (unless `tug.json` turns a pass off): once for correctness ([prompts/code.md](prompts/code.md)) and once for security ([prompts/security.md](prompts/security.md)). It posts one review with inline comments and a `risk:low`, `risk:medium` or `risk:high` label. It fails on a new critical or high finding.
-2. The `merge` job runs after the tests and the review. It squash-merges the exact commit the review saw when `tug.json` allows it, every check passed, no thread is open, and the risk is within the policy. Otherwise it labels the pull request `needs:human` and says why in one comment.
+1. A pull request opens or gets a push, and GitHub Actions runs your tests, then Tug's `review` job.
+2. The review sends the change to the model twice, once for correctness ([prompts/code.md](prompts/code.md)) and once for security ([prompts/security.md](prompts/security.md)). It posts one review with inline comments and a `risk:low`, `risk:medium` or `risk:high` label, and fails on a new critical or high finding.
+3. The `merge` job squash-merges the exact commit the review saw, when `tug.json` allows it, every check passed and no thread is open. Otherwise it labels the pull request `needs:human` and says why in one comment.
 
-Tug never runs the pull request's code; it reads the change through the GitHub API. It never merges a change to `.github/`. A re-review skips findings it already raised and never lowers the risk.
+Tug never runs the pull request's code: it reads the change through the GitHub API. It never merges a change to `.github/`.
 
-## Add Tug to a repository
+## Install
 
-```sh
-tug init --merge
-```
+The CLI needs Node 24 or later. Run it as `npx -y github:hellogafaro/tug#main <command>`; the commands below write `tug` for that.
 
-This writes `.github/workflows/tug.yml` and `tug.json`. The workflow runs the tests from `package.json` (`typecheck`, `lint`, `test`) with the lockfile's package manager, then the review and the merge. Leave out `--merge` to only review.
+### On GitHub's runners
 
-A repository with CI of its own gets only the review, because the merge must run in the same workflow as the tests. Add the jobs to that workflow by hand.
+1. Add the model's secrets to the repository or organization: `TUG_REVIEW_MODEL`, such as `openai/gpt-6.1-sol` or `anthropic/claude-opus-5-5`, and that provider's key, `TUG_OPENAI_API_KEY` or `TUG_ANTHROPIC_API_KEY`.
+2. In the repository, run `tug init --merge`, then commit and push the two files it writes. Leave out `--merge` to only review.
+3. Open a pull request. Tug reviews it within a few minutes.
 
-To remove Tug, run `tug remove --repo <owner/repo>`. It opens a pull request that deletes both files, after you type the repository's name.
+### On your own server
 
-## Settings
+Use this for private repositories only. Each job runs in a fresh Docker container that is deleted after it, with capped CPU and memory, no secrets, and no access to the server or its network. A key service on the server holds the model keys, so repositories need no secrets.
 
-Set these as repository or organization secrets.
+1. Create a GitHub App from [this link](https://github.com/settings/apps/new?name=tug-runners&url=https://github.com/hellogafaro/tug&public=true&webhook_active=false&administration=write&organization_self_hosted_runners=write), which sets its permissions; pick any free name. Generate a private key, and install the app on each account to serve. On a personal account, only the repositories you select are served.
+2. Get a Debian server with SSH and passwordless `sudo`. Nothing else is needed: `tug install` adds Docker and the rest.
+3. Install, with the settings in your environment:
+   ```sh
+   export TUG_APP_ID=123456 TUG_APP_PRIVATE_KEY="$(cat app.pem)" TUG_ACCOUNTS=my-user,my-org \
+     TUG_REVIEW_MODEL=openai/gpt-6.1-sol TUG_OPENAI_API_KEY=sk-...
+   tug install --host <ssh-host>
+   ```
+   Any secrets tool's `run` wrapper works in place of `export`.
+4. Check it: `tug status --host <ssh-host>` shows every service `active`.
+5. In each repository, run `tug init --merge --runs-on tug`, then commit and push.
 
-| Secret | |
-|---|---|
-| `TUG_REVIEW_MODEL` | Required. `openai/<model>` or `anthropic/<model>`, such as `openai/gpt-6.1-sol`. |
-| `TUG_OPENAI_API_KEY`, `TUG_ANTHROPIC_API_KEY` | The key of the provider the model uses. |
-| `TUG_OPENAI_BASE_URL`, `TUG_ANTHROPIC_BASE_URL` | Optional. Default each provider's API; any compatible proxy works. |
-| `TUG_REVIEW_REASONING_EFFORT` | Optional, such as `high`. Unset, the provider's default applies. |
-| `TUG_SECURITY_MODEL`, `TUG_SECURITY_REASONING_EFFORT` | Optional. The security pass; each falls back to the review's. |
+## Common tasks
 
-On your own runners, the key service holds these instead, and the repository needs none.
+1. Update the server to the latest Tug with `tug update --host <h>`. Its settings and running jobs stay.
+2. Change a server setting by running `tug install --host <h>` again with the new value.
+3. A pull request labelled `needs:human`: read Tug's comment, then fix and push, or merge it yourself.
+4. After resolving review threads without a push, rerun the merge job: `gh run rerun <run-id> --job <job-id>`.
+5. Stop Tug from merging one pull request with the `merge:hold` label.
+6. Follow a pull request with `tug pr watch owner/repo#12`. It waits quietly, then prints the state as JSON and exits: 0 ready or merged, 2 conflicts, 3 open threads, 4 failed checks, 5 timeout, 6 held or closed, 7 GitHub unreachable, 1 usage error. `tug pr state` prints the state at once.
+7. Move to another server: `tug remove --host <old>` first, because only one server can serve the app at a time, then `tug install --host <new>`.
+8. Remove Tug from a repository with `tug remove --repo <owner/repo>`. It opens a pull request that deletes the two files.
+
+`remove` asks you to type the name. Without a terminal it needs `--yes`.
 
 ## tug.json
+
+`tug.json` at the repository's root sets what Tug reviews and merges. Tug reads it from the base branch, so a pull request can't loosen its own rules.
 
 ```json
 {
@@ -64,55 +70,36 @@ On your own runners, the key service holds these instead, and the repository nee
 }
 ```
 
-1. `review` and each of its fields are optional. Without it, Tug runs both passes on every pull request that isn't a draft.
-2. `review.code` and `review.security` turn each pass on or off (default on). With both off, Tug doesn't review, and `merge` is an error.
-3. `review.drafts` reviews draft pull requests too (default off).
-4. `review.max` is the most reviews Tug posts on one pull request. Once it is reached, Tug adds `needs:human` and says so in one comment.
-5. `merge.risk` is the highest risk Tug merges by itself. Without `merge`, Tug only reviews.
-6. `filters` take the pull request's `authors`, base `branches`, `labels` and changed `paths`. They work like GitHub Actions' branch and path filters: globs, `!` to exclude, and the last match wins.
-7. A pull request passes `labels` when none of its labels is excluded and, if the list names any to include, it has one of them. Case doesn't matter. A label change counts from the next push.
-8. In `review.filters`, the model sees only the files that match `paths`, and Tug never merges a file the review didn't see. In `merge.filters`, every changed file must match.
-9. When `review` leaves a pull request out, the review job prints `skipped: <reason>` and posts nothing. The merge then holds it for a person with `needs:human`.
-10. `rules` add to the review's defaults.
-11. Tug reads `tug.json` from the base branch, so a pull request can't loosen its own rules.
+1. Every field is optional. Without `review`, Tug runs both passes on every pull request that isn't a draft. Without `merge`, Tug only reviews.
+2. `review.code` and `review.security` turn each pass on or off. With both off, Tug doesn't review, and `merge` is an error.
+3. `review.drafts` reviews drafts too. `review.max` is the most reviews on one pull request; past it, Tug adds `needs:human`.
+4. `merge.risk` is the highest risk Tug merges by itself.
+5. `filters` match the pull request's `authors`, base `branches`, `labels` and changed `paths` with globs, like GitHub Actions' filters: `!` excludes, and the last match wins. A label change counts from the next push.
+6. `review.filters.paths` picks the files the model sees, and Tug never merges a file the review didn't see. In `merge.filters`, every changed file must match `paths`.
+7. A pull request the review leaves out gets `skipped: <reason>` in the job's log and no review, and the merge holds it for a person.
+8. `rules` add to the review's defaults.
 
-## Your own runners
+## Settings
 
-Tug can run every job on single-use runners on a Debian server you reach over SSH. They start runners through a GitHub App of your own. Each job gets a fresh Docker container that is deleted after it, with capped CPU and memory, no access to the server or its network, and no secrets. A key service on the server holds the model keys and answers only Tug's own review jobs, proven by GitHub's OIDC token. Use them for private repositories only.
+| Setting | Where | |
+|---|---|---|
+| `TUG_REVIEW_MODEL` | both | Required. `openai/<model>` or `anthropic/<model>`. |
+| `TUG_OPENAI_API_KEY`, `TUG_ANTHROPIC_API_KEY` | both | The key of each provider a pass uses. |
+| `TUG_OPENAI_BASE_URL`, `TUG_ANTHROPIC_BASE_URL` | both | Optional. Default each provider's API; any compatible proxy works. |
+| `TUG_REVIEW_REASONING_EFFORT` | both | Optional, such as `high`. Unset, the provider's default applies. |
+| `TUG_SECURITY_MODEL`, `TUG_SECURITY_REASONING_EFFORT` | both | Optional. The security pass; each falls back to the review's. |
+| `TUG_APP_ID`, `TUG_APP_PRIVATE_KEY` | server | The GitHub App. A key without its line breaks works too. |
+| `TUG_ACCOUNTS` | server | The users and organizations to serve, such as `my-user,my-org`. |
+| `TUG_MAX_RUNNERS` | server | Optional. Jobs at once, across all accounts. Default 4. |
 
-The server needs Debian, SSH and passwordless `sudo`; `tug install` adds Docker and the rest. It reads its settings from its own environment, so any secrets tool's `run` wrapper works in place of `export`:
-
-```sh
-export TUG_APP_ID=123456 TUG_APP_PRIVATE_KEY="$(cat app.pem)" TUG_ACCOUNTS=my-user,my-org \
-  TUG_REVIEW_MODEL=openai/gpt-6.1-sol TUG_OPENAI_API_KEY=sk-...
-tug install --host <ssh-host>
-```
-
-| Command | |
-|---|---|
-| `tug install --host <h>` | Sets up the server, or reinstalls it with new settings. |
-| `tug update --host <h>` | Moves the server to the latest Tug, keeping its settings and running jobs. |
-| `tug status --host <h>` | Prints the services, the version and the running jobs. Exits 1 when a service is down. |
-| `tug remove --host <h>` | Removes everything from the server, after you type its name. |
-
-[runners/README.md](runners/README.md) has the GitHub App's permissions and the other server settings. Workflows use them with `runs-on: tug`.
-
-## Follow a pull request
-
-```sh
-tug pr state owner/repo#12   # prints the state as JSON
-tug pr watch owner/repo#12   # waits quietly, then prints the state once and exits
-```
-
-`tug pr watch` exits 0 when ready or merged, 2 on conflicts, 3 on open threads, 4 on failed checks, 5 on timeout, 6 when held or closed, 7 when GitHub can't be read, and 1 on a usage error. With `--until-merged` it exits 0 only once merged. It uses `GITHUB_TOKEN`, `GH_TOKEN` or `gh auth token`.
-
-Resolving a thread starts no workflow. After resolving threads without a push, rerun the merge job with `gh run rerun <run-id> --job <job-id>`.
+"Both" means repository or organization secrets on GitHub's runners, or the server's settings on your own.
 
 ## Limits
 
 1. The merge job sees checks from other workflows as pending, so it doesn't merge beside them.
 2. A merge made with the workflow's token starts no other workflows.
 3. Pull requests from forks are skipped, because they get no secrets or write token.
-4. Reviews and comments come from `github-actions[bot]`.
+4. Your own server skips public repositories, and organizations whose Default runner group allows them.
+5. Reviews and comments come from `github-actions[bot]`.
 
-[docs/design.md](docs/design.md) explains the design. Tug is MIT-licensed.
+Tug is MIT-licensed.
