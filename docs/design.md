@@ -40,7 +40,7 @@ forge adapter:  GitHub; later GitLab, Forgejo
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/hellogafaro/tug/v1/schema.json",
+  "$schema": "https://raw.githubusercontent.com/hellogafaro/tug/main/schema.json",
   "merge": {
     "risk": "low",
     "filters": {

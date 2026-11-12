@@ -61,6 +61,6 @@
     }
   },
   "additionalProperties": false,
-  "$id": "https://raw.githubusercontent.com/hellogafaro/tug/v1/schema.json",
+  "$id": "https://raw.githubusercontent.com/hellogafaro/tug/main/schema.json",
   "title": "tug.json"
 }
