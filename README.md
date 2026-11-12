@@ -19,6 +19,8 @@ npx -y github:hellogafaro/tug#main init --merge
 
 This writes `.github/workflows/tug.yml`, with a test job from `package.json` (`typecheck`, `lint`, `test`, using its lockfile's package manager), the review and the merge, and `tug.json`. Leave out `--merge` to only review. A repository with CI of its own gets only the review, because the merge job has to run in the same workflow as the tests; add the jobs to that workflow by hand.
 
+To take Tug off a repository, run `npx -y github:hellogafaro/tug#main remove --repo <owner/repo>`. It opens a pull request that deletes `.github/workflows/tug.yml` and `tug.json`, after you type the repository's name.
+
 Model settings are repository or organization secrets: `TUG_MODEL_URL` (any OpenAI-compatible API), `TUG_MODEL_KEY`, and `TUG_REVIEW_MODEL`, such as `gpt-6.1-sol:high` (a model, optionally with its reasoning effort). The security pass uses `TUG_SECURITY_MODEL` when set, else the review model. With your own runners and the key service (below), the repository needs none of them.
 
 ## tug.json

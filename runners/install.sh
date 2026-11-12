@@ -17,11 +17,11 @@ stop_old() {
 
 if [[ ${1:-} == --uninstall ]]; then
   stop_old
-  systemctl disable --now tug-runners.service tug-keys.service 2>/dev/null || true
+  systemctl disable --now tug-runners.service tug-keys.service tug-prune.timer 2>/dev/null || true
   docker ps -q --filter label=tug.scope | xargs -r docker rm -f >/dev/null
   docker network rm tug >/dev/null 2>&1 || true
   nft delete table inet tug_egress 2>/dev/null || true
-  rm -rf /usr/local/lib/tug /etc/systemd/system/tug-runners.service /etc/systemd/system/tug-keys.service
+  rm -rf /usr/local/lib/tug /etc/systemd/system/tug-{runners,keys,prune}.service /etc/systemd/system/tug-prune.timer
   systemctl daemon-reload
   echo "Uninstalled. /etc/tug/tug.env is kept."
   exit 0
@@ -35,9 +35,11 @@ docker network inspect tug >/dev/null 2>&1 ||
   docker network create --subnet 172.30.99.0/24 --gateway 172.30.99.1 -o com.docker.network.bridge.enable_icc=false tug >/dev/null
 
 install -d -m 0755 /usr/local/lib/tug /etc/tug
+[[ ! -e "$here/../VERSION" ]] || install -m 0644 "$here/../VERSION" /usr/local/lib/tug/VERSION
 build=$(mktemp -d)
 chown "$user" "$build"
-# The key service: Tug itself, from this checkout.
+# The key service: Tug itself, from this checkout. A tarball has no node_modules, and packing builds Tug.
+[[ -d "$here/../node_modules" ]] || (cd "$here/.." && runuser -u "$user" -- npm ci --silent)
 package=$(cd "$here/.." && runuser -u "$user" -- npm pack --silent --pack-destination "$build" | tail -1)
 rm -rf /usr/local/lib/tug/node
 npm install --global --silent --prefix /usr/local/lib/tug/node "$build/$package" >/dev/null
@@ -51,6 +53,7 @@ install -m 0644 "$here/egress.nft" /usr/local/lib/tug/egress.nft
 for unit in tug-runners tug-keys; do
   sed -e "s|@USER@|$user|" -e "s|@RUN@|$run|" "$here/$unit.service" >"/etc/systemd/system/$unit.service"
 done
+install -m 0644 "$here/tug-prune.service" "$here/tug-prune.timer" /etc/systemd/system/
 [[ -e /etc/tug/tug.env ]] || install -m 0600 /dev/null /etc/tug/tug.env
 
 stop_old
@@ -62,4 +65,5 @@ for unit in tug-keys tug-runners; do
   systemctl enable "$unit.service"
   systemctl restart "$unit.service"
 done
+systemctl enable --now tug-prune.timer
 echo "Installed: the runner service and the key service on 172.30.99.1:8787. Logs: journalctl -u tug-runners"
