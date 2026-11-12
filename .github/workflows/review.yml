@@ -22,7 +22,8 @@ on:
 jobs:
   review:
     name: code and security
-    if: ${{ !github.event.pull_request.draft }}
+    # A fork's pull request gets no secrets, OIDC token or write token, so Tug skips it and a person handles it.
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 30
     outputs:
