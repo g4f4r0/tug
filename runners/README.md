@@ -29,7 +29,8 @@ sudo runners/install.sh --uninstall
 ```
 
 `<user>` runs both services. `install.sh` installs Docker and nftables from Debian's packages when they are missing,
-and builds Tug and the runner service in Node's and Go's own images, so the host needs neither. Settings come from
+installs Tug's one runtime dependency in Node's own image, and builds the runner service in Go's, so the host needs
+neither Node nor Go. Settings come from
 `/etc/tug/tug.env`; after changing one, run `sudo systemctl restart tug-runners tug-keys`. Running `install.sh` again
 is the update.
 

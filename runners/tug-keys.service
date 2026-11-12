@@ -12,10 +12,10 @@ ExecStartPre=+/usr/sbin/nft -f /usr/local/lib/tug/egress.nft
 ExecStartPre=-/usr/bin/docker rm -f tug-keys
 # Only the key service's own settings enter its container, so the GitHub App's key never does.
 ExecStart=/usr/bin/docker run --rm --init --name tug-keys --network host --user node \
-  -v /usr/local/lib/tug/node:/tug:ro \
+  -v /usr/local/lib/tug/app:/tug:ro \
   -e TUG_ACCOUNTS -e TUG_REVIEW_MODEL -e TUG_REVIEW_REASONING_EFFORT -e TUG_SECURITY_MODEL -e TUG_SECURITY_REASONING_EFFORT \
   -e TUG_OPENAI_API_KEY -e TUG_OPENAI_BASE_URL -e TUG_ANTHROPIC_API_KEY -e TUG_ANTHROPIC_BASE_URL \
-  node:24 node /tug/lib/node_modules/tug/dist/bin.js keys --listen 172.30.99.1:8787
+  node:24 node /tug/src/bin.ts keys --listen 172.30.99.1:8787
 ExecStop=/usr/bin/docker stop tug-keys
 Restart=always
 RestartSec=10

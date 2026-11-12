@@ -43,11 +43,14 @@ docker network inspect tug >/dev/null 2>&1 ||
 install -d -m 0755 /usr/local/lib/tug /etc/tug
 [[ ! -e "$here/../VERSION" ]] || install -m 0644 "$here/../VERSION" /usr/local/lib/tug/VERSION
 build=$(mktemp -d)
-# The key service: Tug itself, packed from this checkout in Node's own image, so the host needs no Node. Packing builds it.
-docker run --rm -v "$here/..:/src:ro" -v "$build:/out" -w /tmp node:24 sh -ec \
-  'cp -r /src tug && cd tug && npm ci --silent && npm install --global --silent --prefix /out/node "./$(npm pack --silent | tail -1)"' >&2
-rm -rf /usr/local/lib/tug/node
-cp -r "$build/node" /usr/local/lib/tug/node
+# The key service: Tug's source, which Node runs as is, with its runtime dependency installed in Node's own image, so
+# the host needs no Node.
+mkdir "$build/app"
+cp -r "$here/../src" "$here/../prompts" "$here/../package.json" "$here/../package-lock.json" "$build/app/"
+docker run --rm -v "$build/app:/app" -w /app node:24 \
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier --silent >&2
+rm -rf /usr/local/lib/tug/node /usr/local/lib/tug/app
+cp -r "$build/app" /usr/local/lib/tug/app
 # The runner service: built in Go's own image, so the host needs no Go.
 docker run --rm -v "$here/tug-runners:/src:ro" -v "$build:/out" -w /src -e CGO_ENABLED=0 golang:1.27 \
   go build -trimpath -ldflags=-s -o /out/tug-runners . >&2

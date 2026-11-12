@@ -31,7 +31,8 @@ const STATUS = `echo "services $(systemctl is-active ${SERVICES.join(" ")} | tr 
 
 /** The GitHub App's key on one line, its line breaks as spaces, which the runner service puts back. */
 function oneLineKey(value: string): string {
-  const pem = /-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/u.exec(value)
+  // Line breaks may come real, as spaces, or escaped as `\n`, as dotenv files and CI secrets often hold them.
+  const pem = /-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/u.exec(value.replaceAll("\\n", "\n"))
   const lines = pem ? [`-----BEGIN ${pem[1]}-----`, ...(pem[2]!.replace(/\s+/gu, "").match(/.{1,64}/gu) ?? []), `-----END ${pem[1]}-----`] : []
   let type
   try {
@@ -43,13 +44,20 @@ function oneLineKey(value: string): string {
   return lines.join(" ")
 }
 
+/** The settings the host's services read; nothing else in the environment leaves this machine. */
+const HOST_SETTINGS = [
+  "TUG_APP_ID", "TUG_APP_PRIVATE_KEY", "TUG_ACCOUNTS", "TUG_MAX_RUNNERS",
+  "TUG_OPENAI_API_KEY", "TUG_OPENAI_BASE_URL", "TUG_ANTHROPIC_API_KEY", "TUG_ANTHROPIC_BASE_URL",
+  "TUG_REVIEW_MODEL", "TUG_REVIEW_REASONING_EFFORT", "TUG_SECURITY_MODEL", "TUG_SECURITY_REASONING_EFFORT",
+]
+
 /**
- * The host's `/etc/tug/tug.env`: every `TUG_*` variable of `env`, checked as the services read them, one line each
+ * The host's `/etc/tug/tug.env`: the host settings set in `env`, checked as the services read them, one line each
  * as systemd's `EnvironmentFile` reads it.
  */
 export function settingsFile(env: NodeJS.ProcessEnv): string {
   const settings: Record<string, string> = {}
-  for (const [name, value] of Object.entries(env)) if (name.startsWith("TUG_") && value !== undefined) settings[name] = value
+  for (const name of HOST_SETTINGS) if (env[name]) settings[name] = env[name]
   try {
     keysConfig(settings)
   } catch (error) {

@@ -42,13 +42,13 @@ const SETTINGS = "sudo install -d -m 0755 /etc/tug && sudo install -m 0600 /dev/
 const INSTALL = 'sudo ~/tug/runners/install.sh "$USER"'
 
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey
-const ENV = { TUG_APP_ID: "1", TUG_APP_PRIVATE_KEY: PEM, TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', OTHER: "secret", PATH: "/bin" }
+const ENV = { TUG_APP_ID: "1", TUG_APP_PRIVATE_KEY: PEM, TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', TUG_REVIEWER: "someone", OTHER: "secret", PATH: "/bin" }
 
 /** What systemd's EnvironmentFile reads from a double-quoted line. */
 const unquote = (line: string) => /^(\w+)="(.*)"$/u.exec(line)!.slice(1, 3).map((part) => part.replace(/\\(["\\`$])/gu, "$1")) as [string, string]
 
 describe("tug install and update", () => {
-  it("downloads the commit, sends it and only the TUG_ settings as stdin, then installs", async () => {
+  it("downloads the commit, sends it and only the host settings as stdin, then installs", async () => {
     downloads.length = 0
     const { run, calls } = fakeRun()
     const result = await cli(["install", "--host", "box"], { run, request: commits(SHA), env: ENV })
@@ -59,14 +59,14 @@ describe("tug install and update", () => {
     expect(calls[2]!.input).toBeUndefined()
     const lines = String(calls[1]!.input).split("\n")
     expect(lines.pop()).toBe("")
-    expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_APP_PRIVATE_KEY: PEM.trim().replaceAll("\n", " "), OTHER: undefined, PATH: undefined })
+    expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_APP_PRIVATE_KEY: PEM.trim().replaceAll("\n", " "), TUG_REVIEWER: undefined, OTHER: undefined, PATH: undefined })
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "main" })
     expect(result.err).toBe("Installed 0123456 on box\n")
     expect(result.out + result.err).not.toContain("secret")
   })
 
-  it("sends the private key on one line that gives the same key back, whether or not it came with line breaks", async () => {
-    for (const key of [PEM, PEM.replaceAll("\n", " "), PEM.replaceAll("\n", "")]) {
+  it("sends the private key on one line that gives the same key back, whether its line breaks came real, as spaces, escaped or not at all", async () => {
+    for (const key of [PEM, PEM.replaceAll("\n", " "), PEM.replaceAll("\n", "\\n"), PEM.replaceAll("\n", "")]) {
       const { run, calls } = fakeRun()
       expect((await cli(["install", "--host", "box"], { run, request: commits(SHA), env: { ...ENV, TUG_APP_PRIVATE_KEY: key } })).code).toBe(0)
       const [, value] = unquote(String(calls[1]!.input).split("\n").find((line) => line.startsWith("TUG_APP_PRIVATE_KEY="))!)
