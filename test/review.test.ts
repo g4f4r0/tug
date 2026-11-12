@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto"
 import type { AddressInfo } from "node:net"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import type { Review } from "../src/contracts.ts"
 import { ask, modelSettings } from "../src/engine.ts"
@@ -264,6 +264,83 @@ describe("the key service", () => {
       expect(await response.json()).toEqual({ error: { message: "OpenAI answered 503: down" } })
     } finally {
       broken.close()
+    }
+  })
+
+  const models = { code: { provider: "openai" as const, baseUrl: "http://openai/v1", key: "k", model: "m" }, security: { provider: "openai" as const, baseUrl: "http://openai/v1", key: "k", model: "m" } }
+  const question = JSON.stringify({ pass: "code", system: "s", user: "u", schema: {}, name: "t" })
+  const ok = () => new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }))
+  async function serve(fake: (url: string, init: RequestInit) => Promise<Response>) {
+    const server = keysServer({ ...config, models }, { request: fake as unknown as typeof fetch, log: () => {} })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/ask`
+    const ask = (token: string, init: RequestInit = {}) => fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: question, ...init })
+    return { ask, close: () => server.close() }
+  }
+
+  it("stops the provider call when the job gives up", async () => {
+    let started = (): void => {}
+    const calling = new Promise<void>((resolve) => (started = resolve))
+    let aborted = false
+    const keys = await serve(async (url, init) => {
+      if (url.endsWith("/jwks")) return new Response(JSON.stringify({ keys: [jwk] }))
+      started()
+      return new Promise<Response>((_, reject) =>
+        init.signal!.addEventListener("abort", () => {
+          aborted = true
+          reject(init.signal!.reason)
+        }),
+      )
+    })
+    try {
+      const job = new AbortController()
+      const asked = keys.ask(jwt(claims), { signal: job.signal }).catch(() => null)
+      await calling
+      job.abort()
+      await asked
+      for (let wait = 0; !aborted && wait < 100; wait++) await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(aborted).toBe(true)
+    } finally {
+      keys.close()
+    }
+  })
+
+  it("fetches GitHub's keys again for an unknown key ID, at most once a minute", async () => {
+    const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 })
+    let published = [jwk]
+    let fetches = 0
+    const keys = await serve(async (url) => {
+      if (!url.endsWith("/jwks")) return ok()
+      fetches++
+      return new Response(JSON.stringify({ keys: published }))
+    })
+    const clock = vi.spyOn(Date, "now")
+    try {
+      clock.mockReturnValue(now)
+      expect((await keys.ask(jwt(claims))).status).toBe(200)
+      const newToken = jwt(claims, { alg: "RS256", kid: "k2" }, rotated.privateKey)
+      published = [jwk, { ...rotated.publicKey.export({ format: "jwk" }), kid: "k2" }]
+      clock.mockReturnValue(now + 30_000)
+      expect((await keys.ask(newToken)).status).toBe(403)
+      expect(fetches).toBe(1)
+      clock.mockReturnValue(now + 61_000)
+      expect((await keys.ask(newToken)).status).toBe(200)
+      expect(fetches).toBe(2)
+      expect((await keys.ask(jwt(claims, { alg: "RS256", kid: "k3" }))).status).toBe(403)
+      expect(fetches).toBe(2)
+    } finally {
+      clock.mockRestore()
+      keys.close()
+    }
+  })
+
+  it("answers 413 to a body that is too large", async () => {
+    const keys = await serve(async (url) => (url.endsWith("/jwks") ? new Response(JSON.stringify({ keys: [jwk] })) : ok()))
+    try {
+      const response = await keys.ask(jwt(claims), { body: "x".repeat(9_000_000) })
+      expect(response.status).toBe(413)
+    } finally {
+      keys.close()
     }
   })
 })
