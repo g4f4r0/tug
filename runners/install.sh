@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs Tug's runner service and key service on a Debian host, with Docker and nftables from Debian's own packages
-# when they are missing. Every setting is an environment variable in /etc/tug/tug.env (runners/README.md lists them).
+# when they are missing. Every setting is an environment variable in /etc/tug/tug.env (the README lists them).
 #
 #   sudo runners/install.sh <user>
 #   sudo runners/install.sh --uninstall
