@@ -6,9 +6,11 @@ repository's own CI, targets them with `runs-on: tug`.
 One service (`tug-runners`) serves every account that has your GitHub App installed and is listed in `TUG_ACCOUNTS`.
 It registers a runner scale set named `tug` in each organization, and in each private repository of a personal
 account, then waits for jobs. Each queued job gets a fresh container that runs that one job and is deleted, never
-more than `TUG_MAX_RUNNERS` at once across all accounts, which share three quarters of the host's CPUs and memory.
-Nothing runs while no job waits. Restarting the service leaves
-running jobs alone.
+more than `TUG_MAX_RUNNERS` at once across all accounts, which share the host's CPUs and memory evenly. Nothing runs
+while no job waits. Restarting the service leaves running jobs alone.
+
+Give the runners a host of their own: a full pool uses all of it, and a daily timer (`tug-prune`) removes every Docker
+image unused for a day.
 
 No secret enters a container: the app's key stays in the service, and the container gets only its single-use config.
 Containers run as a non-root user with no capabilities and `no-new-privileges`, with CPU, memory and process limits,
@@ -25,7 +27,18 @@ sudo runners/install.sh --uninstall
 ```
 
 `<user>` runs both services. Settings come from Infisical when a project is given, else from `/etc/tug/tug.env`; after
-changing one, run `sudo systemctl restart tug-runners tug-keys`.
+changing one, run `sudo systemctl restart tug-runners tug-keys`. Running `install.sh` again is the update.
+
+To run them on another host, `deploy.sh` does the same over SSH from this checkout, copying only the `TUG_*` settings
+of an Infisical environment into the host's `/etc/tug/tug.env`. Running it again is the update:
+
+```sh
+runners/deploy.sh <ssh-host> <infisical-project-id> <infisical-env>
+runners/deploy.sh <ssh-host> --uninstall
+```
+
+That host needs Debian with Docker, Node 24, nftables and rsync, and passwordless `sudo` for the SSH user. Point
+`TUG_MODEL_URL` at an address it can reach, such as the model API's address on your tailnet.
 
 | Setting | |
 | --- | --- |
