@@ -152,10 +152,26 @@ func (c *config) appJWT() (string, error) {
 	return unsigned + "." + enc.EncodeToString(signature), nil
 }
 
+// apiBase is GitHub's REST API; tests point it at a fake.
+var apiBase = "https://api.github.com"
+
+// docker runs Docker's CLI and returns its output. The command gets only PATH, HOME and env, so none of this service's
+// secrets reach it. Tests replace it.
+var docker = func(env []string, args ...string) ([]byte, error) {
+	cmd := exec.Command("docker", args...)
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}, env...)
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+	}
+	return out, err
+}
+
 func githubAPI(ctx context.Context, method, path, bearer string, into any) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, apiBase+path, nil)
 	if err != nil {
 		return err
 	}
@@ -180,7 +196,7 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 	if err != nil {
 		return nil, err
 	}
-	var installations []struct {
+	type installation struct {
 		ID          int64           `json:"id"`
 		SuspendedAt json.RawMessage `json:"suspended_at"`
 		Account     struct {
@@ -188,8 +204,16 @@ func (c *config) discover(ctx context.Context) ([]scope, error) {
 			Type  string `json:"type"`
 		} `json:"account"`
 	}
-	if err := githubAPI(ctx, http.MethodGet, "/app/installations?per_page=100", jwt, &installations); err != nil {
-		return nil, err
+	var installations []installation
+	for page := 1; ; page++ {
+		var batch []installation
+		if err := githubAPI(ctx, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, &batch); err != nil {
+			return nil, err
+		}
+		installations = append(installations, batch...)
+		if len(batch) < 100 {
+			break
+		}
 	}
 	var scopes []scope
 	for _, inst := range installations {
@@ -288,6 +312,20 @@ func (p *pool) free() int {
 	return p.cfg.max - p.running
 }
 
+// The parts of the scale set client a scaler uses; tests fake them.
+type runnerAPI interface {
+	GenerateJitRunnerConfig(ctx context.Context, setting *scaleset.RunnerScaleSetJitRunnerSetting, scaleSetID int) (*scaleset.RunnerScaleSetJitRunnerConfig, error)
+	RemoveRunner(ctx context.Context, runnerID int64) error
+}
+
+type jobSession interface {
+	AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error)
+}
+
+type capacity interface {
+	SetMaxRunners(count int)
+}
+
 type runner struct {
 	id      int
 	busy    bool
@@ -301,9 +339,9 @@ type scaler struct {
 	pool     *pool
 	scope    scope
 	mu       sync.Mutex
-	client   *scaleset.Client
-	session  *scaleset.MessageSessionClient
-	listener *listener.Listener
+	client   runnerAPI
+	session  jobSession
+	listener capacity
 	setID    int
 	desired  int
 	runners  map[string]*runner
@@ -375,7 +413,7 @@ func (s *scaler) reap(ctx context.Context) {
 		// Its exit frees the slot through watch.
 		r.removed = true
 		extra--
-		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_, _ = docker(nil, "rm", "-f", name)
 		if r.id > 0 && s.client != nil {
 			_ = s.client.RemoveRunner(context.WithoutCancel(ctx), int64(r.id))
 		}
@@ -390,18 +428,16 @@ func (s *scaler) start(ctx context.Context) error {
 		return err
 	}
 	cfg := s.pool.cfg
-	cmd := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--label", containerLabel+"="+s.scope.url, "--init",
+	// The config goes by name from the environment, off the command line.
+	if _, err := docker([]string{"ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit.EncodedJITConfig},
+		"run", "-d", "--rm", "--name", name, "--label", containerLabel+"="+s.scope.url, "--init",
 		"--cpus", cfg.cpus, "--memory", cfg.memory, "--pids-limit", cfg.pids,
 		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--network", cfg.network,
-		"-e", "ACTIONS_RUNNER_INPUT_JITCONFIG", "-e", "TUG_KEYS="+cfg.keys, cfg.image, "./run.sh")
-	// Only what Docker's CLI needs, so none of this service's secrets reach it; the config goes by name, off the
-	// command line.
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "ACTIONS_RUNNER_INPUT_JITCONFIG=" + jit.EncodedJITConfig}
-	if out, err := cmd.CombinedOutput(); err != nil {
+		"-e", "ACTIONS_RUNNER_INPUT_JITCONFIG", "-e", "TUG_KEYS="+cfg.keys, cfg.image, "./run.sh"); err != nil {
 		if jit.Runner != nil {
 			_ = s.client.RemoveRunner(context.WithoutCancel(ctx), int64(jit.Runner.ID))
 		}
-		return fmt.Errorf("docker run: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("docker run: %w", err)
 	}
 	r := &runner{started: time.Now()}
 	if jit.Runner != nil {
@@ -415,7 +451,7 @@ func (s *scaler) start(ctx context.Context) error {
 
 // watch waits for a container to exit, then frees its slot.
 func (s *scaler) watch(ctx context.Context, name string) {
-	_ = exec.Command("docker", "wait", name).Run()
+	_, _ = docker(nil, "wait", name)
 	s.mu.Lock()
 	delete(s.runners, name)
 	s.mu.Unlock()
@@ -427,11 +463,9 @@ func (p *pool) serve(ctx context.Context, sc scope) {
 	s := &scaler{pool: p, scope: sc, runners: map[string]*runner{}}
 	p.mu.Lock()
 	for _, name := range p.adopted[sc.url] {
-		// Already counted in p.running; its exit frees the slot through watch.
+		// Counted in p.running, and freed by watchAdopted.
 		s.runners[name] = &runner{busy: true, started: time.Now()}
-		go s.watch(ctx, name)
 	}
-	delete(p.adopted, sc.url)
 	p.scalers[sc.url] = s
 	p.mu.Unlock()
 	defer func() {
@@ -505,7 +539,7 @@ func (p *pool) listen(ctx context.Context, s *scaler) error {
 // adopt counts the runners an earlier run left behind, so a restart never stops a running job. A container that
 // never took a job is removed, since nothing would assign it one.
 func (p *pool) adopt() {
-	out, err := exec.Command("docker", "ps", "--filter", "label="+containerLabel, "--format", `{{.Names}} {{.Label "`+containerLabel+`"}}`).Output()
+	out, err := docker(nil, "ps", "--filter", "label="+containerLabel, "--format", `{{.Names}} {{.Label "`+containerLabel+`"}}`)
 	if err != nil {
 		slog.Error("Could not list containers", "error", err)
 		return
@@ -515,15 +549,36 @@ func (p *pool) adopt() {
 		if !ok {
 			continue
 		}
-		logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		logs, _ := docker(nil, "logs", name)
 		if !strings.Contains(string(logs), "Running job") {
-			_ = exec.Command("docker", "rm", "-f", name).Run()
+			_, _ = docker(nil, "rm", "-f", name)
 			continue
 		}
+		p.mu.Lock()
 		p.running++
 		p.adopted[url] = append(p.adopted[url], name)
+		p.mu.Unlock()
 		slog.Info("Adopted a running job", "scope", url, "runner", name)
+		go p.watchAdopted(url, name)
 	}
+}
+
+// watchAdopted frees an adopted container's slot when it exits, whether or not its scope is still served.
+func (p *pool) watchAdopted(url, name string) {
+	_, _ = docker(nil, "wait", name)
+	p.mu.Lock()
+	p.adopted[url] = slices.DeleteFunc(p.adopted[url], func(n string) bool { return n == name })
+	if len(p.adopted[url]) == 0 {
+		delete(p.adopted, url)
+	}
+	s := p.scalers[url]
+	p.mu.Unlock()
+	if s != nil {
+		s.mu.Lock()
+		delete(s.runners, name)
+		s.mu.Unlock()
+	}
+	p.release(context.Background())
 }
 
 func main() {
@@ -536,7 +591,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	if err := exec.Command("docker", "pull", "-q", cfg.image).Run(); err != nil {
+	if _, err := docker(nil, "pull", "-q", cfg.image); err != nil {
 		slog.Warn("Could not pull the runner image; using the local one", "image", cfg.image, "error", err)
 	}
 	p := &pool{cfg: cfg, scalers: map[string]*scaler{}, adopted: map[string][]string{}}

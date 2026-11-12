@@ -22,3 +22,18 @@ jobs:
       - run: npm test
       - name: schema.json is current
         run: npm run schema && git diff --exit-code schema.json
+  runners:
+    name: test / runners
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: runners/tug-runners
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: runners/tug-runners/go.mod
+          cache-dependency-path: runners/tug-runners/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
