@@ -1,5 +1,5 @@
 [Unit]
-Description=Tug runner %i
+Description=Tug runner slot %i
 Wants=network-online.target
 After=network-online.target tug-egress.service
 # No runner without the egress rules: it doesn't start if they fail, and stops before they are removed.

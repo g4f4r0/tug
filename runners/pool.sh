@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Keeps one single-use GitHub Actions runner waiting for a job, in the pool user's rootless Docker, and starts the next
-# one when it exits. Runs as root, from tug-pool@<pool>-<slot>.service; the GitHub token never enters a container.
+# one when it exits. Runs as root, from tug-pool@<slot>.service. No secret enters a container: the GitHub token stays
+# here, and the container gets only its single-use runner config.
 set -euo pipefail
 
-instance=${1:?usage: pool.sh <pool>-<slot>}
-pool=${instance%-*}
-slot=${instance##*-}
+slot=${1:?usage: pool.sh <slot>}
 # shellcheck source=/dev/null
-source "/etc/tug/pools/$pool.env"
+source /etc/tug/pool.env
 : "${TUG_REPO:?}" "${TUG_POOL_USER:?}" "${TUG_LABELS:?}" "${TUG_SECRETS_USER:?}" "${TUG_INFISICAL_PROJECT:?}" "${TUG_INFISICAL_ENV:?}"
 image=${TUG_IMAGE:-ghcr.io/actions/actions-runner:latest}
-container="tug-$pool-$slot"
+container="tug-$slot"
 api="https://api.github.com/repos/$TUG_REPO/actions/runners"
 uid=$(id -u "$TUG_POOL_USER")
 export DOCKER_HOST="unix:///run/user/$uid/docker.sock"
@@ -63,26 +62,14 @@ while true; do
   export ACTIONS_RUNNER_INPUT_JITCONFIG
   unset response
 
-  # Values pass by name from this process's environment, never on a command line.
-  envs=(-e ACTIONS_RUNNER_INPUT_JITCONFIG)
-  for key in ${TUG_SECRETS:-}; do
-    value=$(secret "$key")
-    if [[ -n $value ]]; then
-      export "$key=$value"
-      envs+=(-e "$key")
-    fi
-  done
-  unset value
-
   log "Starting $name (runner $runner_id)"
   docker run --rm --name "$container" --init \
     --cpus "${TUG_CPUS:-4}" --memory "${TUG_MEMORY:-6g}" --pids-limit "${TUG_PIDS:-4096}" \
     --security-opt no-new-privileges --cap-drop ALL \
-    "${envs[@]}" "$image" ./run.sh &
+    -e ACTIONS_RUNNER_INPUT_JITCONFIG "$image" ./run.sh &
   wait $! || log "$name exited with $?"
 
   unset ACTIONS_RUNNER_INPUT_JITCONFIG
-  for key in ${TUG_SECRETS:-}; do unset "$key"; done
   remove_runner
   sleep 5
 done

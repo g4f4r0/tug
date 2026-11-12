@@ -5,14 +5,9 @@ table inet tug_egress
 delete table inet tug_egress
 
 table inet tug_egress {
-  set pool_users {
-    type uid
-    elements = { tug-ai, tug-ci }
-  }
-
   chain output {
     type filter hook output priority filter; policy accept;
-    meta skuid != @pool_users accept
+    meta skuid != tug-runner accept
     ip daddr 100.100.100.100 meta l4proto { udp, tcp } th dport 53 accept
     ip6 daddr fd7a:115c:a1e0::53 meta l4proto { udp, tcp } th dport 53 accept
     fib daddr type local reject
