@@ -1,0 +1,14 @@
+[Unit]
+Description=Tug runner %i
+Wants=network-online.target tug-egress.service
+After=network-online.target tug-egress.service
+
+[Service]
+ExecStart=/usr/local/lib/tug/pool.sh %i
+Restart=always
+RestartSec=30
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
