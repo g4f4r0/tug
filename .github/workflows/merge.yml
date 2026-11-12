@@ -28,7 +28,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npx -y github:hellogafaro/tug#main merge "$GITHUB_REPOSITORY#$PR"
+      # Tug runs from its source, which Node runs as is: no build, and only its runtime dependency to install.
+      - name: Get Tug
+        run: |
+          mkdir "$RUNNER_TEMP/tug"
+          curl -fsSL https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
+          npm ci --prefix "$RUNNER_TEMP/tug" --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier
+      - run: node "$RUNNER_TEMP/tug/src/bin.ts" merge "$GITHUB_REPOSITORY#$PR"
         env:
           PR: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ github.token }}
