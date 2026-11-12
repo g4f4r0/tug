@@ -99,7 +99,7 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(900_000),
       })
-      log(`${String(claims.repository)} ${String(claims.job_workflow_ref).split("/").pop()} run ${String(claims.run_id)}: ${upstream.status}`)
+      log(`${String(claims.repository)} ${String(claims.job_workflow_ref).replace(/^.*\/workflows\//u, "")} run ${String(claims.run_id)}: ${upstream.status}`)
       outgoing.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" })
       outgoing.end(Buffer.from(await upstream.arrayBuffer()))
     } catch (error) {

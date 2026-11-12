@@ -169,7 +169,8 @@ describe("merge", () => {
     const request = (async (method: string, path: string) => {
       const route = path.split("?")[0]!
       calls.push(`${method} ${route}`)
-      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: "main", sha: "c".repeat(40) } }
+      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD, ref: "docs/typo", repo: { full_name: "g4f4r0/x" } }, base: { ref: "main", sha: "c".repeat(40) } }
+      if (route.endsWith("/pulls")) return []
       if (route.endsWith("/check-runs")) return { check_runs: overrides.runs ?? [{ name: "test", status: "completed", conclusion: "success" }, { name: "tug / merge", status: "in_progress", conclusion: null }] }
       if (route.endsWith("/status")) return { statuses: [] }
       if (route === "/graphql") return { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }
@@ -183,7 +184,7 @@ describe("merge", () => {
         merged = true
         return { merged: true }
       }
-      if (method === "POST") return {}
+      if (method === "POST" || method === "DELETE") return {}
       throw new Error(`unexpected ${method} ${route}`)
     }) as unknown as Request
     return { request, calls }
@@ -197,6 +198,7 @@ describe("merge", () => {
     const result = await run()
     expect(result).toMatchObject({ merged: true, decision: { action: "merge", reason: "Docs only." } })
     expect(result.calls).toContain("PUT /repos/g4f4r0/x/pulls/5/merge")
+    expect(result.calls).toContain("DELETE /repos/g4f4r0/x/git/refs/heads/docs/typo")
   })
 
   it("holds with needs:human and one comment, or without the run's review", async () => {

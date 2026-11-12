@@ -7,10 +7,15 @@ set -euo pipefail
 slot=${1:?usage: pool.sh <slot>}
 # shellcheck source=/dev/null
 source /etc/tug/pool.env
-: "${TUG_REPO:?}" "${TUG_LABELS:?}" "${TUG_SECRETS_USER:?}" "${TUG_INFISICAL_PROJECT:?}" "${TUG_INFISICAL_ENV:?}"
+: "${TUG_SCOPES:?}" "${TUG_SLOTS:?}" "${TUG_LABELS:?}" "${TUG_SECRETS_USER:?}" "${TUG_INFISICAL_PROJECT:?}" "${TUG_INFISICAL_ENV:?}"
 image=${TUG_IMAGE:-ghcr.io/actions/actions-runner:latest}
 container="tug-$slot"
-api="https://api.github.com/repos/$TUG_REPO/actions/runners"
+# Slots 1..TUG_SLOTS serve the first scope, the next TUG_SLOTS the second, and so on. A scope is owner/repo or an org.
+read -ra scopes <<<"$TUG_SCOPES"
+scope=${scopes[$(((slot - 1) / TUG_SLOTS))]:?slot $slot is past the last scope}
+if [[ $scope == */* ]]; then api="https://api.github.com/repos/$scope/actions/runners"; else api="https://api.github.com/orgs/$scope/actions/runners"; fi
+owner=${scope%%/*}
+token_name="TUG_RUNNER_GITHUB_TOKEN_$(tr 'a-z-' 'A-Z_' <<<"$owner")"
 
 log() { printf '%s\n' "$*" >&2; }
 
@@ -23,8 +28,9 @@ secret() {
 github() {
   local method=$1 url=$2 body=${3:-}
   local token
-  token=$(secret TUG_RUNNER_GITHUB_TOKEN)
-  [[ -n $token ]] || { log "TUG_RUNNER_GITHUB_TOKEN is not set in Infisical"; return 1; }
+  token=$(secret "$token_name")
+  [[ -n $token ]] || token=$(secret TUG_RUNNER_GITHUB_TOKEN)
+  [[ -n $token ]] || { log "Neither $token_name nor TUG_RUNNER_GITHUB_TOKEN is set in Infisical"; return 1; }
   curl -fsS --max-time 30 -X "$method" "$url" \
     -H @<(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n' "$token") \
     ${body:+-d "$body"}

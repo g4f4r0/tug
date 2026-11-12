@@ -1,6 +1,6 @@
 # Self-hosted runners
 
-Single-use GitHub Actions runners for one repository, and the Tug key service, on a Debian host with Docker. Every
+Single-use GitHub Actions runners for repositories and organizations, and the Tug key service, on a Debian host with Docker. Every
 job, Tug's and the repository's own CI, targets them with `runs-on: [self-hosted, tug]`.
 
 A root service per slot (`tug-pool@<slot>`) asks GitHub for a single-use runner config, starts one container for one
@@ -16,10 +16,14 @@ model call only when the request carries GitHub's OIDC token for Tug's own `revi
 repository, and sets the real key, model and reasoning effort itself.
 
 ```sh
-sudo runners/install.sh <owner/repo> <secrets-user> <infisical-project-id> <infisical-env> [slots]
+sudo runners/install.sh <secrets-user> <infisical-project-id> <infisical-env> <slots> <scope>...
 sudo runners/install.sh --uninstall
 ```
 
-`<secrets-user>` is the host user whose Infisical login holds `TUG_RUNNER_GITHUB_TOKEN` (a fine-grained token with
-Administration: write on the repository only) and `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
+Each scope, `owner/repo` or an organization, gets `<slots>` runners. Organization runners join its Default runner
+group, which serves private repositories only.
+
+`<secrets-user>` is the host user whose Infisical login holds, per scope owner, `TUG_RUNNER_GITHUB_TOKEN_<OWNER>` (the
+owner in capitals, `-` as `_`) or else `TUG_RUNNER_GITHUB_TOKEN`: a token that may register runners there
+(Administration: write on a repository, or Self-hosted runners: write on an organization). It also holds `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
 `LLM_REASONING_EFFORT`. Never use self-hosted runners for public repositories.

@@ -30,7 +30,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
       # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the model key.
