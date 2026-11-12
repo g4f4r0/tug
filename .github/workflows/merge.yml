@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: Runner labels as JSON, such as '["self-hosted", "tug"]'
+        description: Runner labels as JSON, such as '["tug"]'
         type: string
         default: '"ubuntu-latest"'
       review:

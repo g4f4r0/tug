@@ -13,7 +13,7 @@ function repo(files: Record<string, string>): string {
   return dir
 }
 const scripts = (names: string[]) => JSON.stringify({ scripts: Object.fromEntries(names.map((name) => [name, "x"])) })
-const tug = (dir: string, merge = true) => init(dir, { merge, runsOn: ["self-hosted", "tug"] })
+const tug = (dir: string, merge = true) => init(dir, { merge, runsOn: ["tug"] })
 
 describe("tug init", () => {
   it("tests with the repository's package manager and scripts, then reviews and merges", () => {
@@ -23,7 +23,7 @@ describe("tug init", () => {
     expect(workflow).toContain("      - run: pnpm install --frozen-lockfile\n      - run: pnpm run typecheck\n      - run: pnpm run test\n")
     expect(workflow).not.toContain("build")
     expect(workflow).toContain("  test:\n    name: test / typecheck, test\n")
-    expect(workflow).toContain(`    runs-on: ["self-hosted","tug"]`)
+    expect(workflow).toContain(`    runs-on: ["tug"]`)
     expect(workflow).toContain("    needs: [test, review]")
     expect(workflow).toContain("      review: ${{ needs.review.outputs.review }}")
     expect(JSON.parse(files[1]!.content)).toEqual({ merge: { risk: "low" } })
@@ -33,6 +33,13 @@ describe("tug init", () => {
   it("uses bun or npm from the lockfile", () => {
     expect(tug(repo({ "package.json": scripts(["lint"]), "bun.lock": "" })).files[0]!.content).toContain("      - uses: oven-sh/setup-bun@v2\n      - run: bun install --frozen-lockfile\n      - run: bun run lint\n")
     expect(tug(repo({ "package.json": scripts(["test"]), "package-lock.json": "" })).files[0]!.content).toContain("      - run: npm ci\n      - run: npm run test\n")
+  })
+
+  it("installs the repository's pnpm, not the newest", () => {
+    const pinned = JSON.stringify({ scripts: { lint: "x" }, packageManager: "pnpm@10.17.1" })
+    expect(tug(repo({ "package.json": pinned, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" })).files[0]!.content).toContain("      - run: corepack enable\n      - run: pnpm install")
+    expect(tug(repo({ "package.json": scripts(["lint"]), "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" })).files[0]!.content).toContain("      - run: npm install --global pnpm@10\n      - run: pnpm install")
+    expect(tug(repo({ "package.json": scripts(["lint"]), "pnpm-lock.yaml": "lockfileVersion: '6.0'\n" })).files[0]!.content).toContain("      - run: npm install --global pnpm@8\n")
   })
 
   it("only reviews without merge, or without tests to wait for", () => {

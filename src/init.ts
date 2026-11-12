@@ -6,7 +6,7 @@ const SCRIPTS = ["typecheck", "lint", "test"] as const
 export interface InitOptions {
   /** Adds the merge job and a `tug.json` that merges low-risk pull requests by itself. */
   merge: boolean
-  /** Runner labels, such as ["self-hosted", "tug"]. */
+  /** Runner labels, such as ["tug"]. */
   runsOn: string[]
 }
 
@@ -15,11 +15,24 @@ export interface InitResult {
   notes: string[]
 }
 
+/**
+ * Installs the repository's pnpm: its `packageManager` through Corepack, else the newest major that writes its
+ * lockfile's version. Corepack alone would take the newest pnpm, which may refuse a lockfile or settings an older one
+ * wrote.
+ */
+function pnpmSetup(dir: string, packageManager: string | undefined): string {
+  if (packageManager?.startsWith("pnpm@")) return "corepack enable"
+  const lockfile = /^lockfileVersion: '?(\d+)/mu.exec(readFileSync(join(dir, "pnpm-lock.yaml"), "utf8"))?.[1]
+  const major = { "5": 7, "6": 8, "9": 10 }[lockfile ?? ""] ?? 10
+  return `npm install --global pnpm@${major}`
+}
+
 /** The test job's name and steps for a repository's root `package.json`, from its lockfile and scripts, or none. */
 function testSteps(dir: string): { name: string; steps: string[] } | null {
   const manifest = join(dir, "package.json")
   if (!existsSync(manifest)) return null
-  const scripts = (JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {}
+  const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: Record<string, string>; packageManager?: string }
+  const scripts = pkg.scripts ?? {}
   const run = SCRIPTS.filter((name) => scripts[name])
   if (run.length === 0) return null
   const name = `test / ${run.join(", ")}`
@@ -28,7 +41,7 @@ function testSteps(dir: string): { name: string; steps: string[] } | null {
   if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb")))
     return steps([...node, "      - uses: oven-sh/setup-bun@v2", "      - run: bun install --frozen-lockfile"], "bun run")
   if (existsSync(join(dir, "pnpm-lock.yaml")))
-    return steps([...node, "      - run: corepack enable", "      - run: pnpm install --frozen-lockfile"], "pnpm run")
+    return steps([...node, `      - run: ${pnpmSetup(dir, pkg.packageManager)}`, "      - run: pnpm install --frozen-lockfile"], "pnpm run")
   if (existsSync(join(dir, "yarn.lock")))
     return steps([...node, "      - run: corepack enable", "      - run: yarn install --immutable"], "yarn run")
   return steps([...node, `      - run: ${existsSync(join(dir, "package-lock.json")) ? "npm ci" : "npm install"}`], "npm run")
