@@ -14,9 +14,9 @@ export const EXIT = {
   QUERY: 7,
 } as const
 
-export const exitCode = (name: Exclude<PullStateName, "PENDING">): number => EXIT[name]
+const exitCode = (name: Exclude<PullStateName, "PENDING">): number => EXIT[name]
 
-export interface WatchResult {
+interface WatchResult {
   /** The last state read; PENDING when the watch timed out. */
   state: PullState
   exit: number
@@ -24,7 +24,7 @@ export interface WatchResult {
 }
 
 /** Consecutive failed reads before the watch gives up with exit 7. */
-export const MAX_FAILURES = 3
+const MAX_FAILURES = 3
 
 /**
  * Reads the pull request every `intervalMs` while it is PENDING, and returns the first other state. A `timeoutMs` of

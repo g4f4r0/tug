@@ -3,7 +3,7 @@
  * segments, `?` one character, and a leading `!` excludes. The last matching pattern wins, and a list of only `!`
  * entries starts from "everything". Every other character is literal, so `dependabot[bot]` names that login.
  */
-export function globRegExp(glob: string): RegExp {
+function globRegExp(glob: string): RegExp {
   let source = ""
   for (let index = 0; index < glob.length; index++) {
     const char = glob[index]!

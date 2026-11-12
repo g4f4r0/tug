@@ -7,10 +7,10 @@ const ISSUER = "https://token.actions.githubusercontent.com"
 /** The only workflow that may call: Tug's own review, from its main branch. */
 const REVIEW_WORKFLOW = "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
 
-export interface KeysConfig {
+interface KeysConfig {
   /** Each pass's provider, model, effort and key. */
   models: Record<Pass, ModelSettings>
-  /** Accounts whose repositories' jobs may call, such as g4f4r0. */
+  /** Accounts whose repositories' jobs may call, such as my-org. */
   owners: string[]
   /** Workflows that may call, as `job_workflow_ref`, such as hellogafaro/tug/.github/workflows/review.yml@refs/heads/main. */
   workflows: string[]

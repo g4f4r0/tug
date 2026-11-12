@@ -1,4 +1,3 @@
-// Ported from opencode-plugins main f9314e2, opencode-github/test/trigger.test.ts, "the pull request's state".
 import { describe, expect, it } from "vitest"
 import { client, pullState, type Request } from "../src/forge/github.ts"
 

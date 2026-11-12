@@ -6,7 +6,7 @@ import { fileAt, pullFiles, readPull, setLabel, touchedPaths, type Request } fro
 /** The merge job's own check run, which is still running while it decides. A finished one named the same still counts. */
 const OWN_CHECK = /(^|\/ )(merge|squash or hold)$/u
 
-export interface MergeResult {
+interface MergeResult {
   decision: Decision
   state: PullState
   merged: boolean

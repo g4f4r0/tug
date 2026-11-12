@@ -277,12 +277,12 @@ describe("usage errors", () => {
   })
 })
 
-describe("removed flags", () => {
-  it.each(["--project", "--env"])("tug install refuses %s", async (name) => {
+describe("unknown flags", () => {
+  it("tug install refuses one before any remote command", async () => {
     const { run, calls } = fakeRun()
-    const result = await cli(["install", "--host", "box", name, "x"], { run, request: commits(SHA), env: ENV })
+    const result = await cli(["install", "--host", "box", "--env", "x"], { run, request: commits(SHA), env: ENV })
     expect(result.code).toBe(1)
-    expect(result.err).toContain(`Unknown option '${name}'`)
+    expect(result.err).toContain("Unknown option '--env'")
     expect(calls).toEqual([])
   })
 })

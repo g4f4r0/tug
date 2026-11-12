@@ -27,7 +27,7 @@ export interface ModelSettings {
 export type PassSettings = ModelSettings | { keys: string; pass: Pass; token: () => Promise<string> }
 
 /** What a provider call gets: the prompts and the JSON schema the answer must match. */
-export interface Question {
+interface Question {
   system: string
   user: string
   schema: Record<string, unknown>
@@ -80,16 +80,19 @@ export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typ
   return { code: { keys, pass: "code", token }, security: { keys, pass: "security", token } }
 }
 
+/** How long one model call may take. */
+const TIMEOUT_MS = 900_000
+
 /** POSTs JSON and returns the parsed answer, or throws with the status and the start of the body. */
-async function post(request: typeof fetch, who: string, url: string, headers: Record<string, string>, body: unknown, timeoutMs: number): Promise<unknown> {
-  const response = await request(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) })
+async function post(request: typeof fetch, who: string, url: string, headers: Record<string, string>, body: unknown): Promise<unknown> {
+  const response = await request(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(TIMEOUT_MS) })
   const text = await response.text()
   if (!response.ok) throw new Error(`${who} answered ${response.status}: ${text.slice(0, 300)}`)
   return JSON.parse(text)
 }
 
 /** A chat-completions call with a strict JSON schema; returns the answer's text. */
-async function openai(settings: ModelSettings, question: Question, request: typeof fetch, timeoutMs: number): Promise<string> {
+async function openai(settings: ModelSettings, question: Question, request: typeof fetch): Promise<string> {
   const body = {
     model: settings.model,
     ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
@@ -99,14 +102,14 @@ async function openai(settings: ModelSettings, question: Question, request: type
     ],
     response_format: { type: "json_schema", json_schema: { name: question.name, strict: true, schema: question.schema } },
   }
-  const answer = (await post(request, "OpenAI", `${settings.baseUrl}/chat/completions`, { authorization: `Bearer ${settings.key}` }, body, timeoutMs)) as { choices?: { message?: { content?: unknown } }[] }
+  const answer = (await post(request, "OpenAI", `${settings.baseUrl}/chat/completions`, { authorization: `Bearer ${settings.key}` }, body)) as { choices?: { message?: { content?: unknown } }[] }
   const content = answer.choices?.[0]?.message?.content
   if (typeof content !== "string") throw new Error("OpenAI returned no content")
   return content
 }
 
 /** A Messages API call with a JSON schema output format; returns the first text block. */
-async function anthropic(settings: ModelSettings, question: Question, request: typeof fetch, timeoutMs: number): Promise<string> {
+async function anthropic(settings: ModelSettings, question: Question, request: typeof fetch): Promise<string> {
   const body = {
     model: settings.model,
     max_tokens: 64_000,
@@ -115,7 +118,7 @@ async function anthropic(settings: ModelSettings, question: Question, request: t
     output_config: { format: { type: "json_schema", schema: question.schema }, ...(settings.reasoningEffort ? { effort: settings.reasoningEffort } : {}) },
   }
   const headers = { "x-api-key": settings.key, "anthropic-version": "2023-06-01" }
-  const answer = (await post(request, "Anthropic", `${settings.baseUrl}/v1/messages`, headers, body, timeoutMs)) as { stop_reason?: unknown; content?: { type?: unknown; text?: unknown }[] }
+  const answer = (await post(request, "Anthropic", `${settings.baseUrl}/v1/messages`, headers, body)) as { stop_reason?: unknown; content?: { type?: unknown; text?: unknown }[] }
   if (answer.stop_reason === "max_tokens") throw new Error("Anthropic stopped at max_tokens before the answer was complete")
   const text = answer.content?.find((block) => block.type === "text")?.text
   if (typeof text !== "string") throw new Error("Anthropic returned no text")
@@ -123,13 +126,13 @@ async function anthropic(settings: ModelSettings, question: Question, request: t
 }
 
 /** One call to the settings' provider; returns the model's JSON text. */
-export function callProvider(settings: ModelSettings, question: Question, request: typeof fetch = fetch, timeoutMs = 900_000): Promise<string> {
-  return (settings.provider === "anthropic" ? anthropic : openai)(settings, question, request, timeoutMs)
+export function callProvider(settings: ModelSettings, question: Question, request: typeof fetch = fetch): Promise<string> {
+  return (settings.provider === "anthropic" ? anthropic : openai)(settings, question, request)
 }
 
 /** One call through the key service, which picks the pass's provider, model and effort; returns the model's JSON text. */
-async function viaKeys(settings: Extract<PassSettings, { keys: string }>, question: Question, request: typeof fetch, timeoutMs: number): Promise<string> {
-  const answer = (await post(request, "The key service", `${settings.keys}/v1/ask`, { authorization: `Bearer ${await settings.token()}` }, { pass: settings.pass, ...question }, timeoutMs)) as { content?: unknown }
+async function viaKeys(settings: Extract<PassSettings, { keys: string }>, question: Question, request: typeof fetch): Promise<string> {
+  const answer = (await post(request, "The key service", `${settings.keys}/v1/ask`, { authorization: `Bearer ${await settings.token()}` }, { pass: settings.pass, ...question })) as { content?: unknown }
   if (typeof answer.content !== "string") throw new Error("The key service returned no content")
   return answer.content
 }
@@ -138,7 +141,7 @@ async function viaKeys(settings: Extract<PassSettings, { keys: string }>, questi
 const UNSUPPORTED = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"]
 
 /** The JSON schema both providers accept for `schema`. */
-export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
+function jsonSchema(schema: z.ZodType): Record<string, unknown> {
   const json = toJSONSchema(schema, { target: "draft-7", override: ({ jsonSchema }) => UNSUPPORTED.forEach((keyword) => delete (jsonSchema as Record<string, unknown>)[keyword]) }) as Record<string, unknown>
   delete json.$schema
   return json
@@ -149,16 +152,15 @@ export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
  * answer that doesn't match is retried once, after `retryWaitMs` so a restarting model service is back, then thrown:
  * the caller fails closed.
  */
-export async function ask<T extends z.ZodType>(input: { settings: PassSettings; system: string; user: string; schema: T; name: string; request?: typeof fetch; timeoutMs?: number; retryWaitMs?: number }): Promise<z.infer<T>> {
+export async function ask<T extends z.ZodType>(input: { settings: PassSettings; system: string; user: string; schema: T; name: string; request?: typeof fetch; retryWaitMs?: number }): Promise<z.infer<T>> {
   const { settings, schema } = input
   const request = input.request ?? fetch
-  const timeoutMs = input.timeoutMs ?? 900_000
   const question: Question = { system: input.system, user: input.user, schema: jsonSchema(schema), name: input.name }
   let last: unknown
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, input.retryWaitMs ?? 30_000))
     try {
-      const content = "keys" in settings ? await viaKeys(settings, question, request, timeoutMs) : await callProvider(settings, question, request, timeoutMs)
+      const content = "keys" in settings ? await viaKeys(settings, question, request) : await callProvider(settings, question, request)
       return schema.parse(JSON.parse(content))
     } catch (error) {
       last = error

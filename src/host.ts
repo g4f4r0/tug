@@ -8,7 +8,7 @@ export type Run = (cmd: string, args: string[], input?: string | Buffer) => { st
 /** Fetches a URL's body; tests replace it so no network is needed. */
 export type Download = (url: string) => Promise<Buffer>
 
-export class HostError extends Error {}
+class HostError extends Error {}
 
 export const spawn: Run = (cmd, args, input) => {
   const result = spawnSync(cmd, args, { input, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
@@ -97,7 +97,7 @@ export async function deploy(input: { host: string; ref: string; request: Reques
   return { host, version: sha, ref }
 }
 
-export interface HostStatus {
+interface HostStatus {
   host: string
   version: string | null
   services: Record<string, string>

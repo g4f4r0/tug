@@ -30,7 +30,7 @@ export async function token(env: NodeJS.ProcessEnv = process.env): Promise<strin
 }
 
 /** A `Request` over fetch, against `GITHUB_API_URL` or api.github.com. */
-export function client(auth: string, options: { api?: string; fetch?: typeof fetch; timeoutMs?: number } = {}): Request {
+export function client(auth: string, options: { api?: string; fetch?: typeof fetch } = {}): Request {
   const api = (options.api ?? process.env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/$/u, "")
   const call = options.fetch ?? fetch
   return async <T>(method: string, path: string, init: { body?: unknown } = {}): Promise<T> => {
@@ -44,7 +44,7 @@ export function client(auth: string, options: { api?: string; fetch?: typeof fet
         ...(init.body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+      signal: AbortSignal.timeout(30_000),
     })
     const text = await response.text()
     if (!response.ok) {
@@ -223,7 +223,7 @@ export async function fileAt(request: Request, repo: string, path: string, ref: 
   }
 }
 
-export interface PostedReview {
+interface PostedReview {
   author: string
   commit: string
   body: string
@@ -240,7 +240,7 @@ export async function pullReviews(request: Request, repo: string, number: number
 }
 
 /** Sets one label of a group, such as `risk:low`, removing the group's others. Creates the label when the repository lacks it. */
-export async function setLabel(request: Request, repo: string, number: number, label: string, labels: string[], color = "ededed"): Promise<void> {
+export async function setLabel(request: Request, repo: string, number: number, label: string, labels: string[], color: string): Promise<void> {
   const group = `${label.split(":")[0]}:`
   for (const other of labels.filter((name) => name.startsWith(group) && name !== label)) {
     await request("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(other)}`).catch((error: GitHubError) => {

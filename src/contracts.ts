@@ -7,7 +7,7 @@ export const RISKS = ["low", "medium", "high"] as const
 export type Risk = (typeof RISKS)[number]
 export const riskRank = (risk: Risk) => RISKS.indexOf(risk)
 
-export const STATES = ["MERGED", "CLOSED", "HELD", "CONFLICTS", "CHECKS", "THREADS", "PENDING", "READY"] as const
+const STATES = ["MERGED", "CLOSED", "HELD", "CONFLICTS", "CHECKS", "THREADS", "PENDING", "READY"] as const
 export type PullStateName = (typeof STATES)[number]
 
 /** A pull request's head as the forge reports it: what a merge and a follow-up are gated on. */
@@ -34,7 +34,6 @@ export const PullState = z.strictObject({
 export type PullState = z.infer<typeof PullState>
 
 export const SEVERITIES = ["critical", "high", "medium", "low"] as const
-export type Severity = (typeof SEVERITIES)[number]
 
 export const Finding = z.strictObject({
   /** The review kind that raised it, such as code or security. */

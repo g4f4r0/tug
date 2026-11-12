@@ -25,7 +25,7 @@ export interface PullFacts {
 }
 
 /** A person adds it to stop the merge for one pull request. */
-export const HOLD_LABEL = "merge:hold"
+const HOLD_LABEL = "merge:hold"
 /** Tug adds it when it holds a pull request for a person. */
 export const HUMAN_LABEL = "needs:human"
 const HELD_LABELS = [HOLD_LABEL, HUMAN_LABEL]
