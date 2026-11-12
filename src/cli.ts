@@ -6,7 +6,7 @@ import { Review } from "./contracts.ts"
 import { describeState } from "./core/state.ts"
 import { modelSettings } from "./engine.ts"
 import { client, pullState, token, type Request } from "./forge/github.ts"
-import { deploy, healthy, removeHost, spawn, status, validHost, type Run } from "./host.ts"
+import { deploy, download, healthy, removeHost, settingsFile, spawn, status, validHost, type Download, type Run } from "./host.ts"
 import { init } from "./init.ts"
 import { keysConfig, keysServer } from "./keys.ts"
 import { runMerge } from "./merge.ts"
@@ -23,7 +23,7 @@ const USAGE = `Usage:
   tug merge <owner/repo#n | PR URL | n>
   tug keys [--listen <host:port>]
   tug init [--merge] [--runs-on <label,...>]
-  tug install --host <ssh-host> --project <infisical-project-id> --env <infisical-env> [--ref <branch|tag|sha>]
+  tug install --host <ssh-host> [--ref <branch|tag|sha>]
   tug update --host <ssh-host> [--ref <branch|tag|sha>]
   tug status --host <ssh-host>
   tug remove --host <ssh-host> [--yes]
@@ -36,7 +36,7 @@ tug merge merges the head when tug.json allows it, or holds it with needs:human.
 tug init writes .github/workflows/tug.yml (tests, review, and merge with --merge) and tug.json in this directory.
   --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
-tug install sets up the runners and the key service on a host over SSH, with the TUG_* settings of an Infisical environment.
+tug install sets up a Debian host over SSH: Docker, nftables, the runners and the key service, with the TUG_* settings of its own environment.
 tug update replaces Tug on the host with a ref (default main), keeps its settings and leaves running jobs alone.
 tug status prints the host's services, installed version and running jobs as JSON; it exits 1 unless the runner and key services are active.
 tug remove takes Tug off a host, or opens a pull request that deletes Tug's workflow and tug.json from a repository.
@@ -79,6 +79,8 @@ type Io = { out: (text: string) => void; err: (text: string) => void }
 export interface Deps {
   run?: Run
   request?: Request
+  download?: Download
+  env?: NodeJS.ProcessEnv
   tty?: boolean
   readLine?: () => Promise<string>
 }
@@ -98,8 +100,6 @@ export async function main(argv: string[], io: Io = { out: (text) => process.std
         listen: { type: "string" },
         merge: { type: "boolean" },
         host: { type: "string" },
-        project: { type: "string" },
-        env: { type: "string" },
         ref: { type: "string" },
         repo: { type: "string" },
         yes: { type: "boolean" },
@@ -225,14 +225,12 @@ function keys(listen: string, io: { out: (text: string) => void; err: (text: str
 
 interface HostFlags {
   host?: string
-  project?: string
-  env?: string
   ref?: string
   repo?: string
   yes?: boolean
 }
 
-const FLAGS: Record<string, (keyof HostFlags)[]> = { install: ["host", "project", "env", "ref"], update: ["host", "ref"], status: ["host"], remove: ["host", "repo", "yes"] }
+const FLAGS: Record<string, (keyof HostFlags)[]> = { install: ["host", "ref"], update: ["host", "ref"], status: ["host"], remove: ["host", "repo", "yes"] }
 
 const readLine = async (): Promise<string> => {
   const lines = createInterface({ input: process.stdin })
@@ -250,14 +248,11 @@ async function hostCommand(command: string, values: HostFlags, io: Io, deps: Dep
     return EXIT.USAGE
   }
   const flag = (name: string) => `--${name}`
-  const stray = (Object.keys(values) as (keyof HostFlags)[]).filter((name) => ["host", "project", "env", "ref", "repo", "yes"].includes(name) && !FLAGS[command]!.includes(name))
+  const stray = (Object.keys(values) as (keyof HostFlags)[]).filter((name) => ["host", "ref", "repo", "yes"].includes(name) && !FLAGS[command]!.includes(name))
   if (stray.length > 0) return usage(`tug ${command} does not take ${stray.map(flag).join(", ")}`)
   if (command === "remove") {
     if ((values.host === undefined) === (values.repo === undefined)) return usage("tug remove takes --host or --repo, not both or neither")
-  } else {
-    const missing = (command === "install" ? ["host", "project", "env"] : ["host"]).filter((name) => !values[name as keyof HostFlags])
-    if (missing.length > 0) return usage(`tug ${command} needs ${missing.map(flag).join(", ")}`)
-  }
+  } else if (!values.host) return usage(`tug ${command} needs --host`)
   if (values.host !== undefined && !validHost(values.host)) return usage(`Not an SSH host: ${values.host}`)
   if (values.repo !== undefined && (!/^[\w.-]+\/[\w.-]+$/u.test(values.repo) || values.repo.split("/").some((part) => /^\.+$/u.test(part)))) return usage(`Not a repository: ${values.repo}`)
 
@@ -283,9 +278,9 @@ async function hostCommand(command: string, values: HostFlags, io: Io, deps: Dep
       io.err(`${values.host} · ${Object.entries(result.services).map(([name, state]) => `${name} ${state}`).join(" · ")} · ${result.running} running\n`)
       return healthy(result) ? 0 : 1
     }
-    const ref = values.ref ?? "main"
+    const settings = command === "install" ? settingsFile(deps.env ?? process.env) : undefined
     const request = deps.request ?? client(await token())
-    const result = await deploy({ host: values.host!, ref, request, run, settings: command === "install" ? { project: values.project!, env: values.env! } : undefined })
+    const result = await deploy({ host: values.host!, ref: values.ref ?? "main", request, run, download: deps.download ?? download, settings })
     io.out(`${JSON.stringify(result, null, 2)}\n`)
     io.err(`Installed ${result.version.slice(0, 7)} on ${result.host}\n`)
     return 0
