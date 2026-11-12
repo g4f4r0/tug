@@ -29,15 +29,22 @@ sudo runners/install.sh --uninstall
 `<user>` runs both services. Settings come from Infisical when a project is given, else from `/etc/tug/tug.env`; after
 changing one, run `sudo systemctl restart tug-runners tug-keys`. Running `install.sh` again is the update.
 
-To run them on another host, `deploy.sh` does the same over SSH from this checkout, copying only the `TUG_*` settings
-of an Infisical environment into the host's `/etc/tug/tug.env`. Running it again is the update:
+To run them on another host, use `tug` from anywhere with SSH access to it. `install` sets up the host with the `TUG_*`
+settings of an Infisical environment, copied into the host's `/etc/tug/tug.env` and never printed:
 
 ```sh
-runners/deploy.sh <ssh-host> <infisical-project-id> <infisical-env>
-runners/deploy.sh <ssh-host> --uninstall
+tug install --host <ssh-host> --project <infisical-project-id> --env <infisical-env> [--ref <branch|tag|sha>]
+tug update --host <ssh-host> [--ref <branch|tag|sha>]
+tug status --host <ssh-host>
+tug remove --host <ssh-host> [--yes]
 ```
 
-That host needs Debian with Docker, Node 24, nftables and rsync, and passwordless `sudo` for the SSH user. Point
+1. `update` fetches Tug from GitHub (default `main`, or `--ref`) and keeps the settings. Running jobs are left alone.
+2. `install` again refreshes the settings too.
+3. `status` prints the services, the installed commit and the running jobs as JSON, and exits 1 unless the runner and key services are active.
+4. `remove` asks you to type the host's name. Without a terminal it needs `--yes`.
+
+That host needs Debian with Docker, Node 24, nftables and curl, and passwordless `sudo` for the SSH user. Point
 `TUG_MODEL_URL` at an address it can reach, such as the model API's address on your tailnet.
 
 | Setting | |

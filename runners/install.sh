@@ -35,9 +35,11 @@ docker network inspect tug >/dev/null 2>&1 ||
   docker network create --subnet 172.30.99.0/24 --gateway 172.30.99.1 -o com.docker.network.bridge.enable_icc=false tug >/dev/null
 
 install -d -m 0755 /usr/local/lib/tug /etc/tug
+[[ ! -e "$here/../VERSION" ]] || install -m 0644 "$here/../VERSION" /usr/local/lib/tug/VERSION
 build=$(mktemp -d)
 chown "$user" "$build"
-# The key service: Tug itself, from this checkout.
+# The key service: Tug itself, from this checkout. A tarball has no node_modules, and packing builds Tug.
+[[ -d "$here/../node_modules" ]] || (cd "$here/.." && runuser -u "$user" -- npm ci --silent)
 package=$(cd "$here/.." && runuser -u "$user" -- npm pack --silent --pack-destination "$build" | tail -1)
 rm -rf /usr/local/lib/tug/node
 npm install --global --silent --prefix /usr/local/lib/tug/node "$build/$package" >/dev/null
