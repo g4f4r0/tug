@@ -47,6 +47,12 @@ stop() {
 trap stop TERM INT
 
 docker rm -f "$container" >/dev/null 2>&1 || true
+# A slot stopped mid-registration, or killed, can leave its runner registered; remove this slot's offline runners.
+if listed=$(github GET "$api?per_page=100"); then
+  for stale in $(python3 -c 'import json,sys; print(" ".join(str(r["id"]) for r in json.load(sys.stdin)["runners"] if r["name"].startswith(sys.argv[1] + "-") and r["status"] == "offline"))' "$container" <<<"$listed"); do
+    github DELETE "$api/$stale" >/dev/null 2>&1 && log "Removed stale runner $stale"
+  done
+fi
 until docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null; do sleep 30; done
 
 while true; do

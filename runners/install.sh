@@ -68,6 +68,13 @@ EOF
 chmod 0600 /etc/tug/pool.env
 
 systemctl daemon-reload
-systemctl enable --now tug-egress.service
-for slot in $(seq "$slots"); do systemctl enable --now "tug-pool@$slot.service"; done
+# Restart, not just start: a re-run must load the new rules, and restart the runners on them, before any job runs.
+systemctl enable tug-egress.service
+systemctl restart tug-egress.service
+rules=$(nft list chain inet tug_egress output)
+[[ $rules == *"skuid != $uid accept"* ]] || { echo "The egress rules did not load." >&2; exit 1; }
+for slot in $(seq "$slots"); do
+  systemctl enable "tug-pool@$slot.service"
+  systemctl restart "tug-pool@$slot.service"
+done
 echo "Installed: $slots runners labelled tug for $repo."
