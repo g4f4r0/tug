@@ -109,10 +109,6 @@ func (a *fakeAPI) RemoveRunner(_ context.Context, id int64) error {
 	return nil
 }
 
-type fakeCapacity struct{ max int }
-
-func (c *fakeCapacity) SetMaxRunners(count int) { c.max = count }
-
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -129,7 +125,7 @@ func testPool(max int) *pool {
 }
 
 func (p *pool) addScaler(url string) *scaler {
-	s := &scaler{pool: p, scope: scope{url: url}, client: &fakeAPI{}, listener: &fakeCapacity{}, runners: map[string]*runner{}}
+	s := &scaler{pool: p, scope: scope{url: url}, client: &fakeAPI{}, listening: true, runners: map[string]*runner{}}
 	p.mu.Lock()
 	p.scalers[url] = s
 	p.mu.Unlock()
@@ -169,9 +165,6 @@ func TestPoolCapIsSharedAndFreedSlotsGoToWaitingScopes(t *testing.T) {
 	if a.count() != 2 || b.count() != 1 || d.running() != 3 {
 		t.Fatalf("want 2 + 1 runners under a cap of 3, got %d + %d (%d containers)", a.count(), b.count(), d.running())
 	}
-	if got := b.listener.(*fakeCapacity).max; got != 1 {
-		t.Fatalf("b should report capacity 1 (its runner, no free slot), got %d", got)
-	}
 
 	// One of a's jobs ends; b's waiting job takes the slot.
 	a.mu.Lock()
@@ -181,6 +174,18 @@ func TestPoolCapIsSharedAndFreedSlotsGoToWaitingScopes(t *testing.T) {
 	eventually(t, "b's second runner", func() bool { return b.count() == 2 })
 	if a.count() != 1 || p.free() != 0 {
 		t.Fatalf("want a 1, free 0; got a %d, free %d", a.count(), p.free())
+	}
+}
+
+func TestEveryScopeReportsTheWholePoolEvenWhenFull(t *testing.T) {
+	newFakeDocker(t)
+	p := testPool(2)
+	p.addScaler("https://github.com/a").want(2)
+	if p.free() != 0 {
+		t.Fatalf("want a full pool, got %d free", p.free())
+	}
+	if got := p.listenerConfig(7); got.MaxRunners != 2 || got.ScaleSetID != 7 {
+		t.Fatalf("a waiting scope must report the whole pool of 2, got %+v", got)
 	}
 }
 
@@ -331,8 +336,8 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	}
 }
 
-func TestShareSplitsTheHostEvenly(t *testing.T) {
-	if cpus, memory := share(16, 32<<30, 6); cpus != "2.67" || memory != fmt.Sprint(int64(32<<30)/6) {
+func TestShareSplitsThreeQuartersOfTheHostEvenly(t *testing.T) {
+	if cpus, memory := share(16, 32<<30, 6); cpus != "2.00" || memory != fmt.Sprint(int64(24<<30)/6) {
 		t.Fatalf("got %s CPUs, %s bytes", cpus, memory)
 	}
 	// Never below one CPU and 1 GiB, however many containers.
