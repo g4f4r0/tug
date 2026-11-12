@@ -143,6 +143,12 @@ describe("decide", () => {
     expect(run({ files: ["README.md", ".github/workflows/x.yml"] })).toMatchObject({ action: "hold", reason: ".github/workflows/x.yml changes the repository's GitHub configuration." })
   })
 
+  it("holds when a changed file is one the review didn't read", () => {
+    const policy = parsePolicy(JSON.stringify({ review: { filters: { paths: ["!dist/**"] } }, merge: { risk: "low" } }))
+    expect(run({ policy, files: ["README.md"] }).action).toBe("merge")
+    expect(run({ policy, files: ["README.md", "dist/app.js"] })).toMatchObject({ action: "hold", reason: "dist/app.js not reviewed, because not in review.filters.paths." })
+  })
+
   it("holds without a review of this head", () => {
     expect(run({ review: null }).action).toBe("hold")
     expect(run({ review: review({ head: "b".repeat(40) }) }).action).toBe("hold")

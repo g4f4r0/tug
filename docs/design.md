@@ -72,7 +72,7 @@ forge adapter:  GitHub; later GitLab, Forgejo
    - When Tug doesn't review (both off, a draft, a filter, no file left, `max` reached), the job prints `skipped: <reason>`, exits 0 and gives the merge no review, so it holds or waits.
 4. Code enforces `merge`:
    - `risk` is the highest risk that merges by itself.
-   - `filters` work like GitHub Actions' branch and path filters: globs, `!` to exclude, last match wins, and a list of only `!` entries means "everything except". `review.filters` has the same keys and rules.
+   - `filters` work like GitHub Actions' branch and path filters: globs, `!` to exclude, last match wins, and a list of only `!` entries means "everything except". `review.filters` has the same keys and rules; its `paths` pick the files the model sees, and the merge holds any changed file outside them, so Tug never merges what its review didn't read.
    - `authors` lists who may be auto-merged.
    - `branches` is the PR's base branch.
    - `labels` passes when no label's last match is a `!` pattern and, if the list has include patterns, one label matches one. For a single label it is the same as `branches`. Labels match without case.

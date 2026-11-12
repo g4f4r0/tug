@@ -70,9 +70,9 @@ On your own runners, the key service holds these instead, and the repository nee
 4. `review.max` is the most reviews Tug posts on one pull request. Once it is reached, Tug adds `needs:human` and says so in one comment.
 5. `merge.risk` is the highest risk Tug merges by itself. Without `merge`, Tug only reviews.
 6. `filters` take the pull request's `authors`, base `branches`, `labels` and changed `paths`. They work like GitHub Actions' branch and path filters: globs, `!` to exclude, and the last match wins.
-7. `labels` pass when no label matches a `!` pattern last, and, if the list has other patterns, one label matches them. Case doesn't matter.
-8. In `review.filters`, the model sees only the files that match `paths`. In `merge.filters`, every changed file must match.
-9. When `review` leaves a pull request out, the review job prints `skipped: <reason>` and posts nothing, so the merge never merges it.
+7. A pull request passes `labels` when none of its labels is excluded and, if the list names any to include, it has one of them. Case doesn't matter. A label change counts from the next push.
+8. In `review.filters`, the model sees only the files that match `paths`, and Tug never merges a file the review didn't see. In `merge.filters`, every changed file must match.
+9. When `review` leaves a pull request out, the review job prints `skipped: <reason>` and posts nothing. The merge then holds it for a person with `needs:human`.
 10. `rules` add to the review's defaults.
 11. Tug reads `tug.json` from the base branch, so a pull request can't loosen its own rules.
 
