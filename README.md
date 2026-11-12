@@ -57,7 +57,7 @@ Resolving a thread starts no workflow. After resolving threads without a push, r
 
 1. Checks from other workflows look pending to the merge job, so it doesn't merge beside them.
 2. A merge made with the workflow's token starts no other workflows.
-3. Pull requests from forks get no secrets, so they get no review.
+3. Pull requests from forks are skipped: they get no secrets, OIDC token or write token.
 4. Reviews and comments show as `github-actions[bot]`.
 
 See [docs/design.md](docs/design.md) for the design.

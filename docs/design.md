@@ -105,7 +105,7 @@ jobs:
    - The merge job only waits for jobs in its own workflow. Checks from other workflows read as PENDING, so it doesn't merge.
    - A merge done with `GITHUB_TOKEN` starts no other workflows.
    - Actions has no event for a resolved thread; verify this.
-   - Workflows that fork PRs start get no secrets, so they get no review.
+   - Pull requests from forks are skipped: they get no secrets, OIDC token or write token.
    - The free plan has no branch protection, so nothing stops a person from merging a red PR.
    - Comments show as `github-actions[bot]`.
 7. Permissions: `contents: write`, `pull-requests: write`, `issues: write`.
