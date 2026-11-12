@@ -1,23 +1,25 @@
-# Self-hosted runner pool
+# Self-hosted runners
 
-A pool of single-use GitHub Actions runners for one repository, on a Debian host with Docker. Every job, Tug's and the
-repository's own CI, targets it with `runs-on: [self-hosted, tug]`.
+Single-use GitHub Actions runners for one repository, and the Tug key service, on a Debian host with Docker. Every
+job, Tug's and the repository's own CI, targets them with `runs-on: [self-hosted, tug]`.
 
-The pool is the user `tug-runner` with its own rootless Docker. A root service per slot (`tug-pool@<slot>`) asks
-GitHub for a single-use runner config, starts one container for one job, and starts the next when it exits. No secret
-enters a container: the GitHub token stays in that service, and the container gets only its single-use config, by
-environment variable. Containers run as a non-root user with no capabilities and `no-new-privileges`, with CPU,
-memory and process limits.
+A root service per slot (`tug-pool@<slot>`) asks GitHub for a single-use runner config, starts one container for one
+job, and starts the next when it exits. No secret enters a container: the GitHub token stays in that service, and the
+container gets only its single-use config. Containers run as a non-root user with no capabilities and
+`no-new-privileges`, with CPU, memory and process limits, on the Docker network `tug`.
 
-`egress.nft` lets the pool reach the internet and the host's DNS resolver, but not the host itself, its tailnet, or
-private networks. A runner doesn't start without these rules, and stops before they are removed.
+`egress.nft` lets that network reach the internet and the key service, but not the rest of the host, its tailnet, or
+private networks. No runner or key service starts without these rules.
+
+The key service (`tug-keys`, `tug keys` on `172.30.99.1:8787`) holds the model settings from Infisical. It forwards a
+model call only when the request carries GitHub's OIDC token for Tug's own `review.yml` on an allowed owner's
+repository, and sets the real key, model and reasoning effort itself.
 
 ```sh
 sudo runners/install.sh <owner/repo> <secrets-user> <infisical-project-id> <infisical-env> [slots]
 sudo runners/install.sh --uninstall
 ```
 
-`<secrets-user>` is the host user whose Infisical login holds `TUG_RUNNER_GITHUB_TOKEN`: a fine-grained token with
-Administration: write on the repository only. Never use self-hosted runners for public repositories.
-
-Idle, four runners and their Docker use about 320 MB of memory and 0.2% of one core.
+`<secrets-user>` is the host user whose Infisical login holds `TUG_RUNNER_GITHUB_TOKEN` (a fine-grained token with
+Administration: write on the repository only) and `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` and optional
+`LLM_REASONING_EFFORT`. Never use self-hosted runners for public repositories.

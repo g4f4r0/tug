@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Keeps one single-use GitHub Actions runner waiting for a job, in the pool user's rootless Docker, and starts the next
-# one when it exits. Runs as root, from tug-pool@<slot>.service. No secret enters a container: the GitHub token stays
-# here, and the container gets only its single-use runner config.
+# Keeps one single-use GitHub Actions runner waiting for a job, in Docker on the network tug, and starts the next one
+# when it exits. Runs as root, from tug-pool@<slot>.service. No secret enters a container: the GitHub token stays here,
+# and the container gets only its single-use runner config and the key service's address.
 set -euo pipefail
 
 slot=${1:?usage: pool.sh <slot>}
 # shellcheck source=/dev/null
 source /etc/tug/pool.env
-: "${TUG_REPO:?}" "${TUG_POOL_USER:?}" "${TUG_LABELS:?}" "${TUG_SECRETS_USER:?}" "${TUG_INFISICAL_PROJECT:?}" "${TUG_INFISICAL_ENV:?}"
+: "${TUG_REPO:?}" "${TUG_LABELS:?}" "${TUG_SECRETS_USER:?}" "${TUG_INFISICAL_PROJECT:?}" "${TUG_INFISICAL_ENV:?}"
 image=${TUG_IMAGE:-ghcr.io/actions/actions-runner:latest}
 container="tug-$slot"
 api="https://api.github.com/repos/$TUG_REPO/actions/runners"
-uid=$(id -u "$TUG_POOL_USER")
-export DOCKER_HOST="unix:///run/user/$uid/docker.sock"
 
 log() { printf '%s\n' "$*" >&2; }
 
@@ -71,8 +69,8 @@ while true; do
   log "Starting $name (runner $runner_id)"
   docker run --rm --name "$container" --init \
     --cpus "${TUG_CPUS:-4}" --memory "${TUG_MEMORY:-6g}" --pids-limit "${TUG_PIDS:-4096}" \
-    --security-opt no-new-privileges --cap-drop ALL \
-    -e ACTIONS_RUNNER_INPUT_JITCONFIG "$image" ./run.sh &
+    --security-opt no-new-privileges --cap-drop ALL --network tug \
+    -e ACTIONS_RUNNER_INPUT_JITCONFIG -e TUG_KEYS=http://172.30.99.1:8787 "$image" ./run.sh &
   wait $! || log "$name exited with $?"
 
   unset ACTIONS_RUNNER_INPUT_JITCONFIG

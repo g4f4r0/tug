@@ -1,0 +1,33 @@
+name: merge
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner labels as JSON, such as '["self-hosted", "tug"]'
+        type: string
+        default: '"ubuntu-latest"'
+      review:
+        description: The review output of review.yml in the same run
+        type: string
+        required: true
+jobs:
+  merge:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 10
+    permissions:
+      checks: read
+      statuses: read
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npx -y github:hellogafaro/tug#main merge "$GITHUB_REPOSITORY#$PR"
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+          TUG_REVIEW: ${{ inputs.review }}
+          TUG_BASE: ${{ github.event.pull_request.base.ref }}
