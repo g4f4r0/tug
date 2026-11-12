@@ -114,11 +114,18 @@ export async function readPull(input: { request: Request; repo: string; number: 
     }
     throw new GitHubError(`${repo}#${number} has more than ${MAX_PAGES * 100} ${key.replace("_", " ")}`)
   }
-  const checks = (await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")).map((run) => ({
-    name: str(run.name),
-    status: str(run.status),
-    conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
-  }))
+  const runs = await all(`/repos/${repo}/commits/${head}/check-runs?filter=latest`, "check_runs")
+  const superseded = await supersededSuites(request, repo, head)
+  const suite = (run: Json) => Number((run.check_suite as Json | undefined)?.id)
+  // A superseded check is dropped only when the newer run has a check of the same name to replace it.
+  const replaced = new Set(runs.filter((run) => !superseded.has(suite(run))).map((run) => str(run.name)))
+  const checks = runs
+    .filter((run) => !(superseded.has(suite(run)) && replaced.has(str(run.name))))
+    .map((run) => ({
+      name: str(run.name),
+      status: str(run.status),
+      conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
+    }))
   const statuses = (await all(`/repos/${repo}/commits/${head}/status`, "statuses")).map((status) => ({ context: str(status.context), state: str(status.state) }))
 
   const [owner, name] = repo.split("/") as [string, string]
@@ -143,6 +150,23 @@ export async function readPull(input: { request: Request; repo: string; number: 
 /** Reads a pull request and names its state. */
 export async function pullState(input: { request: Request; repo: string; number: number; wait?: (ms: number) => Promise<void> } & StateOptions): Promise<PullState> {
   return state(await readPull(input), input)
+}
+
+/**
+ * The check suites of workflow runs that `concurrency` cancelled because a newer run of the same workflow, for the same
+ * event, started on this head: their checks are superseded, not failed. Without `actions: read`, none are, so those checks still fail.
+ */
+async function supersededSuites(request: Request, repo: string, head: string): Promise<Set<number>> {
+  let runs: Json[]
+  try {
+    runs = list((await request<Json>("GET", `/repos/${repo}/actions/runs?head_sha=${head}&per_page=100`)).workflow_runs)
+  } catch {
+    return new Set()
+  }
+  const key = (run: Json) => `${String(run.workflow_id)} ${str(run.event)}`
+  const newest = new Map<string, number>()
+  for (const run of runs) newest.set(key(run), Math.max(newest.get(key(run)) ?? 0, Number(run.id)))
+  return new Set(runs.filter((run) => run.conclusion === "cancelled" && Number(run.id) < (newest.get(key(run)) ?? 0)).map((run) => Number(run.check_suite_id)))
 }
 
 export interface PullFile {
