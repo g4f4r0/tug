@@ -1,0 +1,7 @@
+name: watch-test
+on: pull_request
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 20 && test ! -f /dev/null-fail-${{ github.event.pull_request.head.sha }} && echo ok
