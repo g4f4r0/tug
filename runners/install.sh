@@ -5,10 +5,9 @@
 #   sudo runners/install.sh <secrets-user> <infisical-project-id> <infisical-env> <slots> <scope>...
 #   sudo runners/install.sh --uninstall
 #
-# <secrets-user> is the host user whose Infisical login holds, per scope owner, TUG_GITHUB_TOKEN_<OWNER> (owner
-# in capitals, - as _), or else TUG_GITHUB_TOKEN: a token that may register runners there (Administration: write
-# on a repository, or Self-hosted runners: write on an organization). It also holds the key service's LLM_BASE_URL, LLM_MODEL, LLM_API_KEY and
-# optional LLM_REASONING_EFFORT.
+# <secrets-user> is the host user whose Infisical login holds TUG_APP_ID and TUG_APP_PRIVATE_KEY, of a GitHub App with
+# Administration: write (repositories) and Self-hosted runners: write (organizations), installed on every scope's
+# owner; and LLM_BASE_URL, LLM_MODEL, LLM_API_KEY and optional LLM_REASONING_EFFORT for the key service.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
