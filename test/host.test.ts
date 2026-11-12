@@ -134,8 +134,8 @@ describe("tug status", () => {
     const result = await cli(["status", "--host", "box"], { run })
     expect(result.code).toBe(0)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.args.at(-1)).toContain("systemctl is-active tug-runners tug-keys tug-prune.timer")
-    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-prune.timer": "active" }, running: 2 })
+    expect(calls[0]!.args.at(-1)).toContain("systemctl is-active tug-runners tug-keys tug-cleanup.timer")
+    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-cleanup.timer": "active" }, running: 2 })
   })
 
   it("exits 1 when a service is down", async () => {

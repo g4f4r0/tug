@@ -381,12 +381,12 @@ func TestDockerTimesOutEveryCommandButWait(t *testing.T) {
 	}
 }
 
-func TestPruneServicePullsTheRunnerImageAgain(t *testing.T) {
-	unit, err := os.ReadFile("../tug-prune.service")
+func TestCleanupServicePullsTheRunnerImageAgain(t *testing.T) {
+	unit, err := os.ReadFile("../tug-cleanup.service")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(unit), "docker pull --quiet "+runnerImage+"\n") {
-		t.Fatalf("tug-prune.service does not pull %s again", runnerImage)
+		t.Fatalf("tug-cleanup.service does not pull %s again", runnerImage)
 	}
 }

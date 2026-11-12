@@ -58,7 +58,7 @@ type config struct {
 	pids    string
 }
 
-// runnerImage is GitHub's runner image; tug-prune.service pulls it again after removing unused images.
+// runnerImage is GitHub's runner image; tug-cleanup.service pulls it again after removing unused images.
 const runnerImage = "ghcr.io/actions/actions-runner:latest"
 
 // loadConfig reads TUG_APP_ID, TUG_APP_PRIVATE_KEY, TUG_ACCOUNTS and optional TUG_MAX_RUNNERS (default 4).

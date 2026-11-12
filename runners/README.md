@@ -9,7 +9,7 @@ account, then waits for jobs. Each queued job gets a fresh container that runs t
 more than `TUG_MAX_RUNNERS` at once across all accounts, which share the host's CPUs and memory evenly. Nothing runs
 while no job waits. Restarting the service leaves running jobs alone.
 
-Give the runners a host of their own: a full pool uses all of it, and a daily timer (`tug-prune`) removes every Docker
+Give the runners a host of their own: a full pool uses all of it, and a daily timer (`tug-cleanup`) removes every Docker
 image unused for a day.
 
 No secret enters a container: the app's key stays in the service, and the container gets only its single-use config.

@@ -26,7 +26,7 @@ export const validHost = (host: string): boolean => /^[\w][\w.@-]*$/u.test(host)
 
 const SOURCE = "hellogafaro/tug"
 const SHA = /^[0-9a-f]{40}$/u
-const SERVICES = ["tug-runners", "tug-keys", "tug-prune.timer"]
+const SERVICES = ["tug-runners", "tug-keys", "tug-cleanup.timer"]
 const STATUS = `echo "services $(systemctl is-active ${SERVICES.join(" ")} | tr '\\n' ' ')"; echo "version $(cat /usr/local/lib/tug/VERSION 2>/dev/null)"; echo "running $(docker ps -q --filter label=tug.scope | wc -l)"`
 
 /** The GitHub App's key on one line, its line breaks as spaces, which the runner service puts back. */
