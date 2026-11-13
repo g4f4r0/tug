@@ -323,11 +323,11 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 		Archived bool   `json:"archived,omitempty"`
 	}
 	// Page 1 is full, so the private repository on page 2 is found only by paginating.
-	page1 := []repo{{"g4f4r0/private", true, false}, {"g4f4r0/public", false, false}, {"g4f4r0/old", true, true}}
+	page1 := []repo{{"octocat/private", true, false}, {"octocat/public", false, false}, {"octocat/old", true, true}}
 	for i := len(page1); i < 100; i++ {
-		page1 = append(page1, repo{fmt.Sprintf("g4f4r0/public-%d", i), false, false})
+		page1 = append(page1, repo{fmt.Sprintf("octocat/public-%d", i), false, false})
 	}
-	page2 := []repo{{"g4f4r0/second", true, false}}
+	page2 := []repo{{"octocat/second", true, false}}
 	gone := map[string]bool{}
 	failing := false
 	var mu sync.Mutex
@@ -345,20 +345,20 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 		case failing && path == "/user/repos" && query.Get("page") == "2":
 			http.Error(w, "Server Error", http.StatusInternalServerError)
 		case path == "/user":
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "G4F4R0"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "OctoCat"})
 		case path == "/user/repos" && (query.Get("affiliation") != "owner" || query.Get("visibility") != "private"):
 			http.Error(w, "only the user's own private repositories", http.StatusBadRequest)
 		case path == "/user/repos" && query.Get("page") == "1":
 			_ = json.NewEncoder(w).Encode(page1)
 		case path == "/user/repos" && query.Get("page") == "2":
 			_ = json.NewEncoder(w).Encode(page2)
-		case path == "/users/hellogafaro":
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "HelloGafaro", "type": "Organization"})
+		case path == "/users/acme":
+			_ = json.NewEncoder(w).Encode(map[string]string{"login": "Acme", "type": "Organization"})
 		case path == "/users/public-org", path == "/users/locked-org":
 			_ = json.NewEncoder(w).Encode(map[string]string{"login": path[len("/users/"):], "type": "Organization"})
 		case path == "/users/someone":
 			_ = json.NewEncoder(w).Encode(map[string]string{"login": "someone", "type": "User"})
-		case path == "/orgs/HelloGafaro/actions/runner-groups/1":
+		case path == "/orgs/Acme/actions/runner-groups/1":
 			_ = json.NewEncoder(w).Encode(map[string]bool{"allows_public_repositories": false})
 		case path == "/orgs/public-org/actions/runner-groups/1":
 			_ = json.NewEncoder(w).Encode(map[string]bool{"allows_public_repositories": true})
@@ -377,7 +377,7 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
 	defer slog.SetDefault(previousLog)
 
-	c := &config{token: "ghp_x", owners: []string{"hellogafaro", "public-org", "locked-org", "someone", "g4f4r0"}}
+	c := &config{token: "ghp_x", owners: []string{"acme", "public-org", "locked-org", "someone", "octocat"}}
 	urls := func() []string {
 		t.Helper()
 		scopes, err := c.discover(context.Background())
@@ -390,7 +390,7 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 		}
 		return urls
 	}
-	if want, got := []string{"https://github.com/HelloGafaro", "https://github.com/g4f4r0/private", "https://github.com/g4f4r0/second"}, urls(); !slices.Equal(got, want) {
+	if want, got := []string{"https://github.com/Acme", "https://github.com/octocat/private", "https://github.com/octocat/second"}, urls(); !slices.Equal(got, want) {
 		t.Fatalf("want %v, got %v", want, got)
 	}
 	for _, line := range []string{
@@ -406,9 +406,9 @@ func TestDiscoverServesOnlyAllowedPrivateScopes(t *testing.T) {
 	// The next round stops serving a repository and an organization that are gone.
 	mu.Lock()
 	page2 = nil
-	gone["/users/hellogafaro"] = true
+	gone["/users/acme"] = true
 	mu.Unlock()
-	if want, got := []string{"https://github.com/g4f4r0/private"}, urls(); !slices.Equal(got, want) {
+	if want, got := []string{"https://github.com/octocat/private"}, urls(); !slices.Equal(got, want) {
 		t.Fatalf("want %v, got %v", want, got)
 	}
 

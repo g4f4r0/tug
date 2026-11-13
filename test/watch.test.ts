@@ -75,7 +75,7 @@ describe("watch", () => {
 
 describe("parseRef", () => {
   it("reads owner/repo#n, a pull request URL, or a number with GITHUB_REPOSITORY", () => {
-    expect(parseRef("g4f4r0/opencode-plugins#31")).toEqual({ repo: "g4f4r0/opencode-plugins", number: 31 })
+    expect(parseRef("octocat/hello-world#31")).toEqual({ repo: "octocat/hello-world", number: 31 })
     expect(parseRef("https://github.com/hellogafaro/tug/pull/2/files")).toEqual({ repo: "hellogafaro/tug", number: 2 })
     expect(parseRef("7", { GITHUB_REPOSITORY: "o/r" })).toEqual({ repo: "o/r", number: 7 })
     expect(() => parseRef("7", {})).toThrow("Not a pull request")

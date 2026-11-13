@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { client, pullState, type Request } from "../src/forge/github.ts"
 
 const HEAD = "a".repeat(40)
-const REPO = "g4f4r0/opencode-plugins"
+const REPO = "octocat/hello-world"
 
 interface StateFacts {
   pulls?: Record<string, unknown>[]
@@ -30,7 +30,7 @@ function stateRequest(facts: StateFacts = {}) {
         mergeable: true,
         mergeable_state: "clean",
         labels: [],
-        user: { login: "g4f4r0" },
+        user: { login: "octocat" },
         head: { sha: HEAD },
         base: { ref: "main" },
         ...pulls[Math.min(reads++, pulls.length - 1)],
@@ -83,7 +83,7 @@ describe("the pull request's state", () => {
       head: HEAD,
       base: "main",
       title: "Add the thing",
-      author: "g4f4r0",
+      author: "octocat",
       labels: [],
       passed: ["build"],
       failed: [],
@@ -98,7 +98,7 @@ describe("the pull request's state", () => {
       `GET /repos/${REPO}/commits/${HEAD}/status`,
       "POST /graphql",
     ])
-    expect(calls[4]!.body).toMatchObject({ variables: { owner: "g4f4r0", name: "opencode-plugins", number: 12 } })
+    expect(calls[4]!.body).toMatchObject({ variables: { owner: "octocat", name: "hello-world", number: 12 } })
   })
 
   it("ends at merged or closed without reading checks", async () => {

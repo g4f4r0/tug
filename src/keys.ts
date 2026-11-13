@@ -4,8 +4,8 @@ import { z } from "zod"
 import { callProvider, KEYS_AUDIENCE, PASSES, providerSettings, type ModelSettings, type Pass } from "./engine.ts"
 
 const ISSUER = "https://token.actions.githubusercontent.com"
-/** The only workflow that may call: Tug's own review, from its main branch. */
-const REVIEW_WORKFLOW = "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"
+/** The only workflow that may call: Tug's own review, from its main branch, under its old and new owner while it moves. */
+const REVIEW_WORKFLOWS = ["g4f4r0", "hellogafaro"].map((owner) => `${owner}/tug/.github/workflows/review.yml@refs/heads/main`)
 
 interface KeysConfig {
   /** Each pass's provider, model, effort and key. */
@@ -141,6 +141,6 @@ export function keysConfig(env: NodeJS.ProcessEnv = process.env): KeysConfig {
   return {
     models: providerSettings(env),
     owners: env.TUG_ACCOUNTS.split(/[\s,]+/u).filter(Boolean),
-    workflows: [REVIEW_WORKFLOW],
+    workflows: REVIEW_WORKFLOWS,
   }
 }
