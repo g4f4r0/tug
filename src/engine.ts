@@ -132,7 +132,16 @@ export function callProvider(settings: ModelSettings, question: Question, reques
 
 /** One call through the key service, which picks the pass's provider, model and effort; returns the model's JSON text. */
 async function viaKeys(settings: Extract<PassSettings, { keys: string }>, question: Question, request: typeof fetch): Promise<string> {
-  const answer = (await post(request, "The key service", `${settings.keys}/v1/ask`, { authorization: `Bearer ${await settings.token()}` }, { pass: settings.pass, ...question })) as { content?: unknown }
+  const token = await settings.token()
+  let answer: { content?: unknown }
+  try {
+    answer = (await post(request, "The key service", `${settings.keys}/v1/ask`, { authorization: `Bearer ${token}` }, { pass: settings.pass, ...question })) as { content?: unknown }
+  } catch (error) {
+    // fetch says only "fetch failed" when no answer came; name where it went and what usually stops it.
+    if (!(error instanceof TypeError) || error.message !== "fetch failed") throw error
+    const code = (error.cause as { code?: unknown } | undefined)?.code
+    throw new Error(`Can't reach the key service at ${settings.keys}${typeof code === "string" ? ` (${code})` : ""}. On the runner's host, tug status checks it; a host firewall may drop traffic from the Docker network tug.`, { cause: error })
+  }
   if (typeof answer.content !== "string") throw new Error("The key service returned no content")
   return answer.content
 }

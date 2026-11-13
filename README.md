@@ -25,29 +25,38 @@ The CLI needs Node 24 or later. Run it as `npx -y github:g4f4r0/tug#main <comman
 Use this for private repositories only. Each job runs in a fresh Docker container that is deleted after it, with capped CPU and memory, no secrets, and no access to the server or its network. A key service on the server holds the model keys, so repositories need no secrets.
 
 1. Create a classic token with the `repo` and `admin:org` scopes from [this link](https://github.com/settings/tokens/new?description=Tug&scopes=repo,admin:org), or with the GitHub CLI run `gh auth refresh -s admin:org` and use `gh auth token`. It must be classic, because one classic token serves all your accounts. It acts as you, so it manages runners only in organizations you own and repositories you own, and it can reach every repository you can, so keep the server private.
-2. Get a Debian server with SSH and passwordless `sudo`. Nothing else is needed: `tug install` adds Docker and the rest.
+2. Get a Debian or Ubuntu server with SSH and `sudo`. Nothing else is needed: `tug install` adds Docker and the rest. Where `sudo` asks for a password, run the `tug` commands below in a terminal, and type it when asked.
 3. Install, with the settings in your environment:
    ```sh
    export TUG_GITHUB_TOKEN="$(gh auth token)" TUG_ACCOUNTS=my-user,my-org \
      TUG_REVIEW_MODEL=openai/gpt-6.1-sol TUG_OPENAI_API_KEY=sk-...
    tug install --host <ssh-host>
    ```
-   Any secrets tool's `run` wrapper works in place of `export`.
-4. Check it: `tug status --host <ssh-host>` shows every service `active`.
+   Any secrets tool's `run` wrapper works in place of `export`. The install ends by checking that a job's container reaches the key service, and stops with the reason when it can't.
+4. Check it: `tug status --host <ssh-host>` shows every service `active`, `keys` `ok` when jobs reach the key service, and `model` `ok` when each model answers a test question with your settings.
 5. In each repository, run `tug init --merge --runs-on tug`, then commit and push.
 
 ## Common tasks
 
 1. Update the server to the latest Tug with `tug update --host <h>`. Its settings and running jobs stay.
-2. Change a server setting by running `tug install --host <h>` again with the new value.
-3. A pull request labelled `needs:human`: read Tug's comment, then fix and push, or merge it yourself.
-4. After resolving review threads without a push, rerun the merge job: `gh run rerun <run-id> --job <job-id>`.
-5. Stop Tug from merging one pull request with the `merge:hold` label.
-6. Follow a pull request with `tug pr watch owner/repo#12`. It waits quietly, then prints the state as JSON and exits: 0 ready or merged, 2 conflicts, 3 open threads, 4 failed checks, 5 timeout, 6 held or closed, 7 GitHub unreachable, 1 usage error. `tug pr state` prints the state at once.
-7. Move to another server: `tug remove --host <old>` first, because only one server can serve an account at a time, then `tug install --host <new>`.
-8. Remove Tug from a repository with `tug remove --repo <owner/repo>`. It opens a pull request that deletes the two files.
+2. Change server settings with `tug config set --host <h> TUG_ACCOUNTS=my-user,my-org`, which keeps the others, restarts Tug and prints `tug status`. Give a secret by name alone, such as `tug config set --host <h> TUG_GITHUB_TOKEN`: it comes from your environment, or Tug asks for it without showing it, so it stays out of your shell's history. `tug config unset --host <h> TUG_SECURITY_MODEL` removes one, and `tug config list --host <h>` prints the names set, never a value.
+3. Read the server's logs with `tug logs --host <h>`. `--lines 200` shows more.
+4. A pull request labelled `needs:human`: read Tug's comment, then fix and push, or merge it yourself.
+5. After resolving review threads without a push, rerun the merge job: `gh run rerun <run-id> --job <job-id>`.
+6. Stop Tug from merging one pull request with the `merge:hold` label.
+7. Follow a pull request with `tug pr watch owner/repo#12`. It waits quietly, then prints the state as JSON and exits: 0 ready or merged, 2 conflicts, 3 open threads, 4 failed checks, 5 timeout, 6 held or closed, 7 GitHub unreachable, 1 usage error. `tug pr state` prints the state at once.
+8. Move to another server: `tug remove --host <old>` first, because only one server can serve an account at a time, then `tug install --host <new>`.
+9. Remove Tug from a repository with `tug remove --repo <owner/repo>`. It opens a pull request that deletes the two files.
 
 `remove` asks you to type the name. Without a terminal it needs `--yes`.
+
+### When reviews fail on your own server
+
+Run `tug status --host <h>`; its `keys` and `model` say what is wrong.
+
+1. `keys` timed out: a host firewall drops what jobs send to the key service. `tug install` adds the rule to ufw; another firewall must allow `172.30.99.0/24` to `172.30.99.1` port `8787/tcp`, and nothing else is needed.
+2. `keys` says nothing listens: the key service is down. `tug logs --host <h>` says why.
+3. `model` shows the provider's answer, such as a wrong model name, key or base URL. Fix it with `tug config set`.
 
 ## tug.json
 
