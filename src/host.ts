@@ -35,11 +35,26 @@ export const validHost = (host: string): boolean => /^[\w][\w.@-]*$/u.test(host)
 
 const SOURCE = "g4f4r0/tug"
 const SHA = /^[0-9a-f]{40}$/u
-const LIB = "/usr/local/lib/tug"
-const SERVICES = ["tug-runners", "tug-keys", "tug-cleanup.timer"]
-const STATUS = `echo "services $(systemctl is-active ${SERVICES.join(" ")} | tr '\\n' ' ')"; echo "version $(cat ${LIB}/VERSION 2>/dev/null)"`
-/** What needs root: the running jobs, whether a job's container reaches the key service, and one call to each model. */
-const CHECKS = `echo "running $(docker ps -q --filter label=tug.scope | wc -l)"; echo "keys $(${LIB}/reach.sh 2>&1 | tail -n 1)"; echo "model $(docker exec tug-keys node /tug/src/bin.ts keys --check 2>&1 | tail -n 1)"`
+/** Where Tug lives on the host, in the home of the user it runs as. */
+const LIB = "~/.local/share/tug"
+const SETTINGS_FILE = "~/.config/tug/tug.env"
+const SERVICES = ["tug-runners", "tug-keys", "tug-docker", "tug-cleanup.timer"]
+/**
+ * One call, as the user: the running jobs, whether a job's container reaches the key service, one call to each model,
+ * then the services and the installed version. The services come last: the reach check waits for a key service that
+ * is starting, so a runner service that fails just after a restart shows as failing, not active.
+ */
+const STATUS = [
+  "export DOCKER_HOST=unix:///run/user/$(id -u)/tug/docker.sock",
+  `echo "running $(docker ps -q --filter label=tug.scope 2>/dev/null | wc -l)"`,
+  `echo "keys $(${LIB}/reach.sh 2>&1 | tail -n 1)"`,
+  `echo "model $(docker exec tug-keys node /tug/src/bin.ts keys --check 2>&1 | tail -n 1)"`,
+  `echo "services $(systemctl --user is-active ${SERVICES.join(" ")} | tr '\\n' ' ')"`,
+  `echo "version $(cat ${LIB}/VERSION 2>/dev/null)"`,
+].join("; ")
+const PREFLIGHT = "~/tug/runners/preflight.sh"
+/** A Tug from before it ran as a user, which only root can remove. */
+const LEGACY = "test -e /etc/systemd/system/tug-runners.service"
 
 /** The settings the host's services read; nothing else in the environment leaves this machine. */
 export const HOST_SETTINGS = [
@@ -131,18 +146,59 @@ function asRoot(ssh: Ssh, host: string, script: string, input?: string): string 
   return output
 }
 
-/** Installs or updates Tug on a host at the commit `ref` names. Settings, from `settingsFile`, are sent only when given. */
-export async function deploy(input: { host: string; ref: string; request: Request; ssh: Ssh; download: Download; settings?: string }): Promise<{ host: string; version: string; ref: string }> {
-  const { host, ref, ssh } = input
-  const commit = await input.request<{ sha?: string }>("GET", `/repos/${SOURCE}/commits/${ref.split("/").map(encodeURIComponent).join("/")}`)
-  const sha = commit.sha ?? ""
-  if (!SHA.test(sha)) throw new HostError(`GitHub gave no commit SHA for ${ref}`)
-  const tarball = await input.download(`https://codeload.github.com/${SOURCE}/tar.gz/${sha}`)
+/** What `runners/preflight.sh` found: 0 ready, 1 something needs root, 2 a system Tug can't run on. */
+export interface Preflight {
+  code: number
+  report: string
+  /** The items only root can fix, which `preflight.sh --fix` takes. */
+  root: string[]
+}
 
-  remote(ssh.run, host, `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${sha} > ~/tug/VERSION`, tarball)
-  const install = `"$2/tug/runners/install.sh" "$1"`
-  // The settings go straight into the root-only file; they are never printed.
-  asRoot(ssh, host, input.settings === undefined ? install : `install -d -m 0755 /etc/tug && install -m 0600 /dev/stdin /etc/tug/tug.env && ${install}`, input.settings)
+/** Runs the preflight check on the host, as the user; it changes nothing. */
+function preflight(run: Run, host: string): Preflight {
+  const result = run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", host, PREFLIGHT])
+  if (![0, 1, 2].includes(result.status) || !result.stdout.trim()) throw new HostError(`${host}: ${result.stderr.trim() || result.stdout.trim() || `the check exited ${result.status}`}`)
+  const report = result.stdout.trim()
+  // An item is a lowercase word, so it is safe in the root command line.
+  const root = report.split("\n").flatMap((line) => /^root +([a-z0-9]+) /u.exec(line)?.[1] ?? [])
+  return { code: result.status, report, root }
+}
+
+/** Downloads the commit `ref` names and unpacks it into `~/tug` on the host, which `install.sh` installs from. */
+async function fetchTug(input: { host: string; ref: string; request: Request; run: Run; download: Download }): Promise<string> {
+  const commit = await input.request<{ sha?: string }>("GET", `/repos/${SOURCE}/commits/${input.ref.split("/").map(encodeURIComponent).join("/")}`)
+  const sha = commit.sha ?? ""
+  if (!SHA.test(sha)) throw new HostError(`GitHub gave no commit SHA for ${input.ref}`)
+  const tarball = await input.download(`https://codeload.github.com/${SOURCE}/tar.gz/${sha}`)
+  remote(input.run, input.host, `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${sha} > ~/tug/VERSION`, tarball)
+  return sha
+}
+
+/** `tug install --check`: what the host has and lacks, from the commit `ref` names; it installs nothing. */
+export async function checkHost(input: { host: string; ref: string; request: Request; run: Run; download: Download }): Promise<Preflight> {
+  await fetchTug(input)
+  return preflight(input.run, input.host)
+}
+
+/**
+ * Installs or updates Tug on a host at the commit `ref` names, as the SSH user. What only root can provide is fixed
+ * first, once, when the check finds it missing; then nothing runs as root. Settings, from `settingsFile`, are sent
+ * only when given.
+ */
+export async function deploy(input: { host: string; ref: string; request: Request; ssh: Ssh; download: Download; settings?: string; log?: (line: string) => void }): Promise<{ host: string; version: string; ref: string }> {
+  const { host, ref, ssh } = input
+  const sha = await fetchTug({ ...input, run: ssh.run })
+  let found = preflight(ssh.run, host)
+  if (found.code === 2) throw new HostError(`${host} can't run Tug:\n${found.report}`)
+  if (found.root.length > 0) {
+    input.log?.(`${found.report}\n${host} needs this once, as root: ${found.root.join(", ")}\n`)
+    asRoot(ssh, host, `"$2/tug/runners/preflight.sh" --fix "$1" ${found.root.join(" ")}`)
+    found = preflight(ssh.run, host)
+    if (found.code !== 0) throw new HostError(`${host} still lacks what Tug needs:\n${found.report}`)
+  }
+  // The settings go straight into a file only the user can read; they are never printed.
+  if (input.settings !== undefined) remote(ssh.run, host, `umask 077 && mkdir -p ~/.config/tug && cat > ${SETTINGS_FILE}`, input.settings)
+  remote(ssh.run, host, "~/tug/runners/install.sh")
   return { host, version: sha, ref }
 }
 
@@ -150,7 +206,7 @@ interface HostStatus {
   host: string
   version: string | null
   services: Record<string, string>
-  /** Jobs running now, or null when the checks couldn't run. */
+  /** Jobs running now. */
   running: number | null
   /** ok when a job's container reaches the key service, else why not. */
   keys: string
@@ -158,47 +214,43 @@ interface HostStatus {
   model: string
 }
 
-/**
- * As root, the running jobs, the key service's reach and the models; then the services and the installed version. The
- * services come last: the reach check waits for a key service that is starting, so a runner service that fails just
- * after a restart shows as failing, not active.
- */
-export function status(ssh: Ssh, host: string): HostStatus {
-  const field = (lines: string[], name: string) => lines.find((line) => line.startsWith(`${name} `))?.slice(name.length + 1).trim()
-  let checks: { running: number | null; keys: string; model: string }
-  try {
-    const lines = asRoot(ssh, host, CHECKS).split("\n")
-    const running = Number(field(lines, "running"))
-    checks = { running: Number.isInteger(running) ? running : null, keys: field(lines, "keys") || "no answer", model: field(lines, "model") || "no answer" }
-  } catch (error) {
-    const why = `not checked: ${(error as Error).message}`
-    checks = { running: null, keys: why, model: why }
-  }
-  const basic = remote(ssh.run, host, STATUS).split("\n")
-  const states = (field(basic, "services") ?? "").split(/\s+/u).filter(Boolean)
+/** Reads, as the user, the running jobs, the key service's reach, the models, the services and the installed version. */
+export function status(run: Run, host: string): HostStatus {
+  const lines = remote(run, host, STATUS).split("\n")
+  const field = (name: string) => lines.find((line) => line.startsWith(`${name} `))?.slice(name.length + 1).trim()
+  const states = (field("services") ?? "").split(/\s+/u).filter(Boolean)
   if (states.length !== SERVICES.length) throw new HostError(`${host}: could not read the status of Tug`)
-  return { host, version: field(basic, "version") || null, services: Object.fromEntries(SERVICES.map((name, index) => [name, states[index]!])), ...checks }
+  const running = Number(field("running"))
+  return {
+    host,
+    version: field("version") || null,
+    services: Object.fromEntries(SERVICES.map((name, index) => [name, states[index]!])),
+    running: Number.isInteger(running) ? running : null,
+    keys: field("keys") || "no answer",
+    model: field("model") || "no answer",
+  }
 }
 
-export const healthy = (host: HostStatus): boolean => host.services["tug-runners"] === "active" && host.services["tug-keys"] === "active" && host.keys === "ok" && host.model === "ok"
+export const healthy = (host: HostStatus): boolean => ["tug-runners", "tug-keys", "tug-docker"].every((name) => host.services[name] === "active") && host.keys === "ok" && host.model === "ok"
 
 /** Sets and removes host settings, keeping every other one, then restarts both services. Values are never printed. */
-export function configure(ssh: Ssh, host: string, changes: SettingChanges): void {
+export function configure(run: Run, host: string, changes: SettingChanges): void {
   checkChanges(changes)
   const lines = [...Object.entries(changes.set).map(([name, value]) => settingLine(name, value)), ...changes.unset.map((name) => `-${name}\n`)]
-  asRoot(ssh, host, `${LIB}/config.sh`, lines.join(""))
+  remote(run, host, `${LIB}/config.sh`, lines.join(""))
 }
 
 /** The names of the settings the host has, never their values. */
-export const settingNames = (ssh: Ssh, host: string): string[] => asRoot(ssh, host, `${LIB}/config.sh --list`).split("\n").filter(Boolean)
+export const settingNames = (run: Run, host: string): string[] => remote(run, host, `${LIB}/config.sh --list`).split("\n").filter(Boolean)
 
-/** The last lines the key service and the runner service logged. */
-export function logs(ssh: Ssh, host: string, lines: number): string {
+/** The last lines Tug's Docker, key service and runner service logged. */
+export function logs(run: Run, host: string, lines: number): string {
   if (!Number.isSafeInteger(lines) || lines < 1) throw new HostError("--lines takes a positive number")
-  return asRoot(ssh, host, `journalctl -u tug-keys -u tug-runners -n ${lines} --no-pager -q -o short-iso`)
+  return remote(run, host, `journalctl --user -u tug-docker -u tug-keys -u tug-runners -n ${lines} --no-pager -q -o short-iso`)
 }
 
+/** Takes Tug off a host, settings included. Only a Tug from before it ran as a user needs root to go. */
 export function removeHost(ssh: Ssh, host: string): void {
-  asRoot(ssh, host, `"$2/tug/runners/install.sh" --uninstall && rm -f /etc/tug/tug.env`)
-  remote(ssh.run, host, "rm -rf ~/tug")
+  if (ssh.run("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", host, LEGACY]).status === 0) asRoot(ssh, host, `"$2/tug/runners/preflight.sh" --fix "$1" legacy`)
+  remote(ssh.run, host, `~/tug/runners/install.sh --uninstall && rm -f ${SETTINGS_FILE} && rm -rf ~/tug`)
 }

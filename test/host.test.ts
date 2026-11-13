@@ -6,19 +6,28 @@ import type { Run } from "../src/host.ts"
 
 const SHA = "0123456789abcdef0123456789abcdef01234567"
 
+const READY = "ok    os           Debian GNU/Linux 13\nok    docker       Docker version 29.1.3\nuser  linger       Tug enables it"
+const LACKING = "ok    os           Ubuntu 26.04.1 LTS\nroot  uidmap       no newuidmap\nroot  rootlesskit  no rootlesskit\nfix: sudo /home/me/tug/runners/preflight.sh --fix me uidmap rootlesskit"
+
 /**
- * A runner that records every call and answers `ssh` by the command: sudo's password check (passwordless unless `sudo`
- * is false), the status, the root checks, and the output a terminal's root step left.
+ * A runner that records every call and answers `ssh` by the command: the preflight check, from `preflight` in turn
+ * (ready unless given), sudo's password check (passwordless unless `sudo` is false), a Tug that ran as root (`legacy`),
+ * the status, and the output a terminal's root step left.
  */
-function fakeRun(answers: { status?: string; checks?: string; sudo?: boolean; output?: string } = {}) {
+function fakeRun(answers: { preflight?: { status: number; stdout: string }[]; sudo?: boolean; legacy?: boolean; status?: string; output?: string } = {}) {
   const calls: { cmd: string; args: string[]; input?: string | Buffer }[] = []
+  const checks = [...(answers.preflight ?? [])]
   const run: Run = (cmd, args, input) => {
     calls.push({ cmd, args, input })
     const command = args.at(-1)!
     const answer = (stdout = "", status = 0) => ({ status, stdout, stderr: "" })
-    if (command === "sudo -n true") return answer("", answers.sudo === false ? 1 : 0)
-    if (command.startsWith('echo "services')) return answer(answers.status)
-    if (command.startsWith("sudo sh -c") && command.includes("docker ps")) return answer(answers.checks)
+    if (command === PREFLIGHT) {
+      const next = checks.shift() ?? { status: 0, stdout: READY }
+      return answer(next.stdout, next.status)
+    }
+    if (command === SUDO) return answer("", answers.sudo === false ? 1 : 0)
+    if (command === LEGACY) return answer("", answers.legacy ? 0 : 1)
+    if (command.startsWith("export DOCKER_HOST")) return answer(answers.status)
     if (command.startsWith("cat ~/.tug-output")) return answer(answers.output)
     return answer()
   }
@@ -49,9 +58,12 @@ function cli(argv: string[], deps: Deps) {
 
 const ssh = (command: string, input?: string | Buffer) => ({ cmd: "ssh", args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "box", command], input })
 const FETCH = `rm -rf ~/tug && mkdir ~/tug && tar -xz --strip-components=1 -C ~/tug && echo ${SHA} > ~/tug/VERSION`
+const PREFLIGHT = "~/tug/runners/preflight.sh"
 const SUDO = "sudo -n true"
-const INSTALL = root('"$2/tug/runners/install.sh" "$1"')
-const SETTINGS_INSTALL = root('install -d -m 0755 /etc/tug && install -m 0600 /dev/stdin /etc/tug/tug.env && "$2/tug/runners/install.sh" "$1"')
+const LEGACY = "test -e /etc/systemd/system/tug-runners.service"
+const SETTINGS = "umask 077 && mkdir -p ~/.config/tug && cat > ~/.config/tug/tug.env"
+const INSTALL = "~/tug/runners/install.sh"
+const FIX = root('"$2/tug/runners/preflight.sh" --fix "$1" uidmap rootlesskit')
 
 const ENV = { TUG_GITHUB_TOKEN: "ghp_token", TUG_ACCOUNTS: "me,my-org", TUG_REVIEW_MODEL: "openai/gpt-6.1-sol", TUG_OPENAI_API_KEY: 'k=$x"`\\', TUG_REVIEWER: "someone", OTHER: "secret", PATH: "/bin" }
 
@@ -59,47 +71,72 @@ const ENV = { TUG_GITHUB_TOKEN: "ghp_token", TUG_ACCOUNTS: "me,my-org", TUG_REVI
 const unquote = (line: string) => /^(\w+)="(.*)"$/u.exec(line)!.slice(1, 3).map((part) => part.replace(/\\(["\\`$])/gu, "$1")) as [string, string]
 
 describe("tug install and update", () => {
-  it("downloads the commit, sends it, then installs as root with only the host settings as stdin", async () => {
+  it("downloads the commit, checks the host, writes only the host settings for the user, then installs, all without root", async () => {
     downloads.length = 0
     const { run, calls } = fakeRun()
     const result = await cli(["install", "--host", "box"], { run, request: commits(SHA), env: ENV })
     expect(result.code).toBe(0)
     expect(downloads).toEqual([`https://codeload.github.com/g4f4r0/tug/tar.gz/${SHA}`])
-    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, SUDO, SETTINGS_INSTALL])
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT, SETTINGS, INSTALL])
     expect(calls[0]).toEqual(ssh(FETCH, TARBALL))
     const lines = String(calls[2]!.input).split("\n")
     expect(lines.pop()).toBe("")
     expect(Object.fromEntries(lines.map(unquote))).toEqual({ ...ENV, TUG_REVIEWER: undefined, OTHER: undefined, PATH: undefined })
+    expect(calls.some((call) => call.args.at(-1)!.includes("sudo"))).toBe(false)
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "main" })
     expect(result.err).toBe("Installed 0123456 on box\n")
     expect(result.out + result.err).not.toContain("secret")
   })
 
-  it("lets sudo ask for the password on a terminal, the settings waiting in a file only the user reads", async () => {
-    const { run, calls } = fakeRun({ sudo: false })
+  it("fixes what only root can, once, with passwordless sudo, then checks again and installs as the user", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 1, stdout: LACKING }] })
+    const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: false })
+    expect(result.code).toBe(0)
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT, SUDO, FIX, PREFLIGHT, INSTALL])
+    expect(result.err).toContain("box needs this once, as root: uidmap, rootlesskit\n")
+  })
+
+  it("lets sudo ask for the password on a terminal for that one fix", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 1, stdout: LACKING }], sudo: false, output: "Fixed: uidmap rootlesskit\n" })
     const typed: string[][] = []
     const interactive = (cmd: string, args: string[]) => {
       typed.push([cmd, ...args])
       return 0
     }
-    const result = await cli(["install", "--host", "box"], { run, request: commits(SHA), env: ENV, tty: true, interactive })
+    const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: true, interactive })
     expect(result.code).toBe(0)
-    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, SUDO, "umask 077 && cat > ~/.tug-input", "cat ~/.tug-output 2>/dev/null; rm -f ~/.tug-output"])
-    expect(String(calls[2]!.input)).toContain('TUG_ACCOUNTS="me,my-org"\n')
-    expect(typed).toEqual([["ssh", "-t", "-o", "ConnectTimeout=30", "box", `(umask 077 && : > ~/.tug-output) && ${SETTINGS_INSTALL} < ~/.tug-input >> ~/.tug-output; code=$?; rm -f ~/.tug-input; exit $code`]])
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT, SUDO, "cat ~/.tug-output 2>/dev/null; rm -f ~/.tug-output", PREFLIGHT, INSTALL])
+    expect(typed).toEqual([["ssh", "-t", "-o", "ConnectTimeout=30", "box", `(umask 077 && : > ~/.tug-output) && ${FIX} >> ~/.tug-output; code=$?; rm -f ~/.tug-input; exit $code`]])
   })
 
-  it("refuses off a terminal when sudo asks for a password, and says how to go on", async () => {
-    const { run, calls } = fakeRun({ sudo: false })
+  it("refuses off a terminal when the fix needs sudo's password, and installs nothing", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 1, stdout: LACKING }], sudo: false })
     const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: false })
-    expect(result).toEqual({ code: 1, out: "", err: "box: sudo asks for a password there; run this in a terminal to type it, or allow passwordless sudo\n" })
-    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, SUDO])
+    expect(result.code).toBe(1)
+    expect(result.err).toContain("box: sudo asks for a password there; run this in a terminal to type it, or allow passwordless sudo\n")
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT, SUDO])
   })
 
-  it("fails when the root step on a terminal fails, with what it left", async () => {
-    const { run } = fakeRun({ sudo: false, output: "Installed, but jobs can't reach the key service: timed out\n" })
-    const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: true, interactive: () => 1 })
-    expect(result).toEqual({ code: 1, out: "", err: "box: Installed, but jobs can't reach the key service: timed out\n" })
+  it("stops when the fix leaves something missing, with what the check says", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 1, stdout: LACKING }, { status: 1, stdout: LACKING }] })
+    const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: false })
+    expect(result.code).toBe(1)
+    expect(result.err).toContain("box still lacks what Tug needs:\nok    os")
+    expect(calls.map((call) => call.args.at(-1))).not.toContain(INSTALL)
+  })
+
+  it("refuses a system Tug can't run on", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 2, stdout: "fail  os           Fedora Linux 44: Tug runs on Debian or a distribution built on it, such as Ubuntu" }] })
+    const result = await cli(["update", "--host", "box"], { run, request: commits(SHA), tty: false })
+    expect(result).toEqual({ code: 1, out: "", err: "box can't run Tug:\nfail  os           Fedora Linux 44: Tug runs on Debian or a distribution built on it, such as Ubuntu\n" })
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT])
+  })
+
+  it("--check prints the check and installs nothing", async () => {
+    const { run, calls } = fakeRun({ preflight: [{ status: 1, stdout: LACKING }] })
+    const result = await cli(["install", "--host", "box", "--check"], { run, request: commits(SHA), env: ENV })
+    expect(result).toEqual({ code: 1, out: `${LACKING}\n`, err: "box needs this once, as root: uidmap, rootlesskit; tug install asks for sudo for it\n" })
+    expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, PREFLIGHT])
   })
 
   it.each([
@@ -131,7 +168,7 @@ describe("tug install and update", () => {
     }) as Request
     const result = await cli(["update", "--host", "box", "--ref", "feat/own-host"], { run, request, env: ENV })
     expect(result.code).toBe(0)
-    expect(calls).toEqual([ssh(FETCH, TARBALL), ssh(SUDO), ssh(INSTALL)])
+    expect(calls).toEqual([ssh(FETCH, TARBALL), ssh(PREFLIGHT), ssh(INSTALL)])
     expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, ref: "feat/own-host" })
   })
 
@@ -151,55 +188,46 @@ describe("tug install and update", () => {
 })
 
 describe("tug status", () => {
-  const output = (services: string) => `services ${services}\nversion ${SHA}\n`
-  const CHECKS = "running 2\nkeys ok\nmodel ok\n"
+  const output = (services: string, checks = "running 2\nkeys ok\nmodel ok\n") => `${checks}services ${services}\nversion ${SHA}\n`
 
-  it("reads the checks as root, then the services, and exits 0 when all are well", async () => {
-    const { run, calls } = fakeRun({ status: output("active active active"), checks: CHECKS })
+  it("reads everything in one call as the user, and exits 0 when all are well", async () => {
+    const { run, calls } = fakeRun({ status: output("active active active active") })
     const result = await cli(["status", "--host", "box"], { run, tty: false })
     expect(result.code).toBe(0)
-    const commands = calls.map((call) => call.args.at(-1)!)
-    expect(commands).toHaveLength(3)
-    expect(commands[0]).toBe(SUDO)
-    expect(commands[1]).toMatch(/^sudo sh -c '.*docker ps.*reach\.sh.*docker exec tug-keys node \/tug\/src\/bin\.ts keys --check/u)
-    expect(commands[2]).toContain("systemctl is-active tug-runners tug-keys tug-cleanup.timer")
-    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-cleanup.timer": "active" }, running: 2, keys: "ok", model: "ok" })
-    expect(result.err).toBe("box · tug-runners active · tug-keys active · tug-cleanup.timer active · 2 running · keys ok · model ok\n")
+    expect(calls).toHaveLength(1)
+    const command = calls[0]!.args.at(-1)!
+    expect(command).toMatch(/^export DOCKER_HOST=unix:\/\/\/run\/user\/\$\(id -u\)\/tug\/docker\.sock; .*reach\.sh.*docker exec tug-keys node \/tug\/src\/bin\.ts keys --check.*systemctl --user is-active tug-runners tug-keys tug-docker tug-cleanup\.timer/u)
+    expect(command).not.toContain("sudo")
+    expect(JSON.parse(result.out)).toEqual({ host: "box", version: SHA, services: { "tug-runners": "active", "tug-keys": "active", "tug-docker": "active", "tug-cleanup.timer": "active" }, running: 2, keys: "ok", model: "ok" })
+    expect(result.err).toBe("box · tug-runners active · tug-keys active · tug-docker active · tug-cleanup.timer active · 2 running · keys ok · model ok\n")
   })
 
-  it("exits 1 when a service is down", async () => {
-    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: output("active failed inactive"), checks: CHECKS }).run, tty: false })
+  it.each([["tug-keys", "active failed active active"], ["tug-docker", "active active inactive active"]])("exits 1 when %s is down", async (name, services) => {
+    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: output(services) }).run, tty: false })
     expect(result.code).toBe(1)
-    expect(JSON.parse(result.out).services["tug-keys"]).toBe("failed")
+    expect(JSON.parse(result.out).services[name]).not.toBe("active")
   })
 
   it.each([
-    ["keys", "running 0\nkeys the connection to 172.30.99.1:8787 timed out\nmodel ok\n"],
-    ["model", "running 0\nkeys ok\nmodel code and security (openai/gpt): OpenAI answered 404: no such model\n"],
-  ])("exits 1 and says why when the %s check fails", async (name, checks) => {
-    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: output("active active active"), checks }).run, tty: false })
+    ["keys", "running 0\nkeys nothing listens on 172.30.99.1:8787\nmodel ok\n", "nothing listens on 172.30.99.1:8787"],
+    ["model", "running 0\nkeys ok\nmodel code and security (openai/gpt): OpenAI answered 404: no such model\n", "code and security (openai/gpt): OpenAI answered 404: no such model"],
+  ])("exits 1 and says why when the %s check fails", async (name, checks, why) => {
+    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: output("active active active active", checks) }).run, tty: false })
     expect(result.code).toBe(1)
-    expect(JSON.parse(result.out)[name]).toBe(checks.split("\n")[name === "keys" ? 1 : 2]!.slice(name.length + 1))
-  })
-
-  it("reports the root checks as not checked when sudo asks for a password off a terminal", async () => {
-    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: output("active active active"), sudo: false }).run, tty: false })
-    expect(result.code).toBe(1)
-    const why = "not checked: box: sudo asks for a password there; run this in a terminal to type it, or allow passwordless sudo"
-    expect(JSON.parse(result.out)).toMatchObject({ running: null, keys: why, model: why })
+    expect(JSON.parse(result.out)[name]).toBe(why)
   })
 
   it("reads an empty version as null", async () => {
-    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: "services active active active\nversion \n", checks: CHECKS }).run, tty: false })
+    const result = await cli(["status", "--host", "box"], { run: fakeRun({ status: "running 0\nkeys ok\nmodel ok\nservices active active active active\nversion \n" }).run, tty: false })
     expect(JSON.parse(result.out).version).toBeNull()
   })
 })
 
 describe("tug config", () => {
-  const CONFIG = root("/usr/local/lib/tug/config.sh")
-  const healthy = { status: "services active active active\nversion x\n", checks: "running 0\nkeys ok\nmodel ok\n" }
+  const CONFIG = "~/.local/share/tug/config.sh"
+  const healthy = { status: "running 0\nkeys ok\nmodel ok\nservices active active active active\nversion x\n" }
 
-  it("sets values given, from the environment and typed at a prompt, as root, then prints the status", async () => {
+  it("sets values given, from the environment and typed at a prompt, as the user, then prints the status", async () => {
     const { run, calls } = fakeRun(healthy)
     const prompts: string[] = []
     const readSecret = async (prompt: string) => {
@@ -209,8 +237,9 @@ describe("tug config", () => {
     const result = await cli(["config", "set", "--host", "box", "TUG_ACCOUNTS=me,org", "TUG_MAX_RUNNERS", "TUG_GITHUB_TOKEN"], { run, tty: true, readSecret, env: { TUG_MAX_RUNNERS: "2" } })
     expect(result.code).toBe(0)
     expect(prompts).toEqual(["TUG_GITHUB_TOKEN: "])
-    const change = calls.find((call) => call.args.at(-1) === CONFIG)!
-    expect(String(change.input)).toBe('TUG_ACCOUNTS="me,org"\nTUG_MAX_RUNNERS="2"\nTUG_GITHUB_TOKEN="typed\\"\\$secret"\n')
+    expect(calls.map((call) => call.args.at(-1)).slice(0, 1)).toEqual([CONFIG])
+    expect(String(calls[0]!.input)).toBe('TUG_ACCOUNTS="me,org"\nTUG_MAX_RUNNERS="2"\nTUG_GITHUB_TOKEN="typed\\"\\$secret"\n')
+    expect(calls.some((call) => call.args.at(-1)!.includes("sudo"))).toBe(false)
     expect(result.err).toContain("Set TUG_ACCOUNTS, TUG_MAX_RUNNERS, TUG_GITHUB_TOKEN on box, and restarted Tug's services\n")
     expect(JSON.parse(result.out)).toMatchObject({ keys: "ok", model: "ok" })
     expect(result.out + result.err).not.toContain("secret")
@@ -224,7 +253,7 @@ describe("tug config", () => {
   })
 
   it("lists the names the host has", async () => {
-    const run: Run = (_cmd, args) => ({ status: 0, stdout: args.at(-1) === root("/usr/local/lib/tug/config.sh --list") ? "TUG_ACCOUNTS\nTUG_GITHUB_TOKEN\n" : "", stderr: "" })
+    const run: Run = (_cmd, args) => ({ status: 0, stdout: args.at(-1) === `${CONFIG} --list` ? "TUG_ACCOUNTS\nTUG_GITHUB_TOKEN\n" : "", stderr: "" })
     expect(await cli(["config", "list", "--host", "box"], { run, tty: false })).toEqual({ code: 0, out: "TUG_ACCOUNTS\nTUG_GITHUB_TOKEN\n", err: "" })
   })
 
@@ -252,12 +281,12 @@ describe("tug config", () => {
 })
 
 describe("tug logs", () => {
-  it("prints both services' last lines, read as root", async () => {
+  it("prints the last lines of Tug's Docker, key service and runner service, read as the user", async () => {
     const run: Run = (_cmd, args) => ({ status: 0, stdout: args.at(-1)!.includes("journalctl") ? "line 1\nline 2\n" : "", stderr: "" })
     expect(await cli(["logs", "--host", "box"], { run, tty: false })).toEqual({ code: 0, out: "line 1\nline 2\n", err: "" })
     const { run: recording, calls } = fakeRun()
     await cli(["logs", "--host", "box", "--lines", "5"], { run: recording, tty: false })
-    expect(calls.at(-1)!.args.at(-1)).toBe(root("journalctl -u tug-keys -u tug-runners -n 5 --no-pager -q -o short-iso"))
+    expect(calls.at(-1)!.args.at(-1)).toBe("journalctl --user -u tug-docker -u tug-keys -u tug-runners -n 5 --no-pager -q -o short-iso")
   })
 
   it("refuses a --lines that is not a positive number", async () => {
@@ -283,7 +312,7 @@ describe("tug keys --check", () => {
 })
 
 describe("tug remove --host", () => {
-  const UNINSTALL = root('"$2/tug/runners/install.sh" --uninstall && rm -f /etc/tug/tug.env')
+  const UNINSTALL = "~/tug/runners/install.sh --uninstall && rm -f ~/.config/tug/tug.env && rm -rf ~/tug"
 
   it("refuses without --yes when stdin is not a terminal", async () => {
     const { run, calls } = fakeRun()
@@ -293,12 +322,19 @@ describe("tug remove --host", () => {
     expect(calls).toEqual([])
   })
 
-  it("removes with --yes", async () => {
+  it("removes with --yes, as the user", async () => {
     const { run, calls } = fakeRun()
     const result = await cli(["remove", "--host", "box", "--yes"], { run, tty: false })
     expect(result.code).toBe(0)
-    expect(calls).toEqual([ssh(SUDO), ssh(UNINSTALL), ssh("rm -rf ~/tug")])
+    expect(calls).toEqual([ssh(LEGACY), ssh(UNINSTALL)])
     expect(JSON.parse(result.out)).toEqual({ host: "box", removed: true })
+  })
+
+  it("removes a Tug that ran as root with the one fix as root first", async () => {
+    const { run, calls } = fakeRun({ legacy: true })
+    const result = await cli(["remove", "--host", "box", "--yes"], { run, tty: false })
+    expect(result.code).toBe(0)
+    expect(calls.map((call) => call.args.at(-1))).toEqual([LEGACY, SUDO, root('"$2/tug/runners/preflight.sh" --fix "$1" legacy'), UNINSTALL])
   })
 
   it("removes when the typed name matches on a terminal", async () => {
@@ -306,7 +342,7 @@ describe("tug remove --host", () => {
     const result = await cli(["remove", "--host", "box"], { run, tty: true, readLine: async () => "box" })
     expect(result.code).toBe(0)
     expect(result.err).toContain("Type box to remove Tug from it: ")
-    expect(calls.map((call) => call.args.at(-1))).toEqual([SUDO, UNINSTALL, "rm -rf ~/tug"])
+    expect(calls.map((call) => call.args.at(-1))).toEqual([LEGACY, UNINSTALL])
   })
 
   it("does not remove when the typed name is wrong", async () => {

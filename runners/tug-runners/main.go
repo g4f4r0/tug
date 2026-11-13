@@ -118,8 +118,8 @@ var dockerBin = "docker"
 // the runner image, get five times as long.
 var dockerTimeout = 2 * time.Minute
 
-// runDocker runs Docker's CLI and returns its output. The command gets only PATH, HOME and env, so none of this
-// service's secrets reach it.
+// runDocker runs Docker's CLI and returns its output. The command gets only PATH, HOME, DOCKER_HOST, which names Tug's
+// rootless Docker, and env, so none of this service's secrets reach it.
 func runDocker(env []string, args ...string) ([]byte, error) {
 	ctx := context.Background()
 	if args[0] != "wait" {
@@ -133,6 +133,9 @@ func runDocker(env []string, args ...string) ([]byte, error) {
 	}
 	cmd := exec.CommandContext(ctx, dockerBin, args...)
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}, env...)
+	if host := os.Getenv("DOCKER_HOST"); host != "" {
+		cmd.Env = append(cmd.Env, "DOCKER_HOST="+host)
+	}
 	out, err := cmd.Output()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {

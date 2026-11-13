@@ -1,9 +1,11 @@
 [Unit]
 Description=Remove Docker images and build cache Tug's runners no longer use
-After=docker.service
+Requires=tug-docker.service
+After=tug-docker.service
 
 [Service]
 Type=oneshot
+Environment=DOCKER_HOST=unix://%t/tug/docker.sock
 # Images built over a day ago that no container uses. The filter goes by build date, so the runner image goes too on a
 # quiet day: pulling it again keeps the next job from waiting for it, and keeps the runner current.
 ExecStart=/usr/bin/docker image prune --all --force --filter until=24h

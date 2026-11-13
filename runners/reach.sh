@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Checks that a container on the Docker network tug, as every job is, reaches the key service on 172.30.99.1:8787. It
-# prints ok, or why not and what usually causes it, and exits 1 then. It retries for 30 seconds, as the key service may
-# be starting. Run as root, or as a user in the docker group.
+# Checks that a container on the Docker network tug, as every job is, reaches the key service on 172.30.99.1:8787, in
+# Tug's rootless Docker. It prints ok, or why not, and exits 1 then. It retries for 30 seconds, as the key service may be
+# starting. Run as the user Tug runs as.
 set -uo pipefail
+export DOCKER_HOST=unix:///run/user/$(id -u)/tug/docker.sock
 probe='
 const until = Date.now() + 30_000
 for (;;) {
@@ -15,7 +16,7 @@ for (;;) {
     if (Date.now() > until) {
       console.log(
         code === "ECONNREFUSED" ? "nothing listens on 172.30.99.1:8787; see the key service in tug logs"
-        : code === "TimeoutError" || code === "UND_ERR_CONNECT_TIMEOUT" ? "the connection to 172.30.99.1:8787 timed out, as when a host firewall drops it; allow 172.30.99.0/24 to 172.30.99.1 port 8787/tcp"
+        : code === "TimeoutError" || code === "UND_ERR_CONNECT_TIMEOUT" ? "the connection to 172.30.99.1:8787 timed out; see Tug'"'"'s rules and the key service in tug logs"
         : `${code} from 172.30.99.1:8787`,
       )
       process.exit(1)

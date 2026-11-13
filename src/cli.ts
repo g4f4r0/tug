@@ -6,7 +6,7 @@ import { Review } from "./contracts.ts"
 import { describeState } from "./core/state.ts"
 import { modelSettings } from "./engine.ts"
 import { client, pullState, token, type Request } from "./forge/github.ts"
-import { configure, deploy, download, healthy, HOST_SETTINGS, interactive, logs, removeHost, settingNames, settingsFile, spawn, status, validHost, type Download, type Interactive, type Run, type Ssh } from "./host.ts"
+import { checkHost, configure, deploy, download, healthy, HOST_SETTINGS, interactive, logs, removeHost, settingNames, settingsFile, spawn, status, validHost, type Download, type Interactive, type Run, type Ssh } from "./host.ts"
 import { init } from "./init.ts"
 import { checkModels, keysConfig, keysServer } from "./keys.ts"
 import { runMerge } from "./merge.ts"
@@ -23,7 +23,7 @@ const USAGE = `Usage:
   tug merge <owner/repo#n | PR URL | n>
   tug keys [--listen <host:port>] [--check]
   tug init [--merge] [--runs-on <label,...>]
-  tug install --host <ssh-host> [--ref <branch|tag|sha>]
+  tug install --host <ssh-host> [--ref <branch|tag|sha>] [--check]
   tug update --host <ssh-host> [--ref <branch|tag|sha>]
   tug status --host <ssh-host>
   tug config set --host <ssh-host> <NAME=value | NAME>...
@@ -42,16 +42,18 @@ tug init writes .github/workflows/tug.yml (tests and review) in this directory; 
   --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
   --check instead asks each model one test question with the key service's settings, and prints ok or what failed.
-tug install sets up a Debian or Ubuntu host over SSH: Docker, nftables, the runners and the key service, with the TUG_*
-  settings of its own environment, and checks that jobs reach the key service.
+tug install sets up Tug on a Debian or Ubuntu host over SSH, as the SSH user and never as root: its own rootless Docker,
+  the runners and the key service, with the TUG_* settings of its own environment, and checks that jobs reach the key
+  service. It first checks what the host lacks; only what root alone can install, such as Docker or uidmap, asks for
+  sudo, once. --check prints that check and installs nothing.
 tug update replaces Tug on the host with a ref (default main), keeps its settings and leaves running jobs alone.
 tug status prints the host's services, installed version, running jobs, whether jobs reach the key service (keys) and
   whether each model answers a test question (model) as JSON; it exits 1 unless every one is well.
 tug config set changes host settings and keeps the rest; a bare NAME takes its value from the environment, or asks for
   it without showing it. tug config unset removes settings. Both restart the services, then print tug status.
   tug config list prints the names set, never a value.
-tug logs prints the key service's and the runner service's last log lines (default 50).
-Where sudo asks for a password, install, update, status, config, logs and remove --host need a terminal to type it.
+tug logs prints the last log lines of Tug's Docker, key service and runner service (default 50).
+Where sudo asks for a password, an install or update that needs it, and removing a Tug that ran as root, need a terminal.
 tug remove takes Tug off a host, or opens a pull request that deletes Tug's workflow and tug.json from a repository.
   It asks you to type the name; without a terminal it refuses unless --yes is given, which only a person's approval allows.
 tug pr state prints the pull request's state as JSON: MERGED, CLOSED, HELD, CONFLICTS, CHECKS, THREADS, PENDING or READY.
@@ -269,10 +271,11 @@ interface HostFlags {
   repo?: string
   yes?: boolean
   lines?: string
+  check?: boolean
 }
 
 const FLAGS: Record<string, (keyof HostFlags)[]> = {
-  install: ["host", "ref"],
+  install: ["host", "ref", "check"],
   update: ["host", "ref"],
   status: ["host"],
   remove: ["host", "repo", "yes"],
@@ -327,7 +330,7 @@ async function hostCommand(command: string, args: string[], values: HostFlags, i
     return EXIT.USAGE
   }
   const flag = (name: string) => `--${name}`
-  const stray = (Object.keys(values) as (keyof HostFlags)[]).filter((name) => ["host", "ref", "repo", "yes", "lines"].includes(name) && !FLAGS[command]!.includes(name))
+  const stray = (Object.keys(values) as (keyof HostFlags)[]).filter((name) => ["host", "ref", "repo", "yes", "lines", "check"].includes(name) && !FLAGS[command]!.includes(name))
   if (stray.length > 0) return usage(`tug ${command} does not take ${stray.map(flag).join(", ")}`)
   if (command === "remove") {
     if ((values.host === undefined) === (values.repo === undefined)) return usage("tug remove takes --host or --repo, not both or neither")
@@ -357,19 +360,19 @@ async function hostCommand(command: string, args: string[], values: HostFlags, i
       return 0
     }
     if (command === "status") {
-      const result = status(ssh, host)
+      const result = status(ssh.run, host)
       io.out(`${JSON.stringify(result, null, 2)}\n`)
       io.err(summary(result))
       return healthy(result) ? 0 : 1
     }
     if (command === "logs") {
-      const lines = logs(ssh, host, Number(values.lines ?? 50))
+      const lines = logs(ssh.run, host, Number(values.lines ?? 50))
       if (lines.trim()) io.out(lines.endsWith("\n") ? lines : `${lines}\n`)
       else io.err(`${host} has no log lines from Tug's services\n`)
       return 0
     }
     if (command === "config list") {
-      for (const name of settingNames(ssh, host)) io.out(`${name}\n`)
+      for (const name of settingNames(ssh.run, host)) io.out(`${name}\n`)
       return 0
     }
     if (command === "config set" || command === "config unset") {
@@ -385,16 +388,22 @@ async function hostCommand(command: string, args: string[], values: HostFlags, i
         else if (tty) changes.set[name] = await (deps.readSecret ?? readSecret)(`${name}: `)
         else return usage(`Give ${name}=<value>, set ${name} in the environment, or run this in a terminal to type it`)
       }
-      configure(ssh, host, changes)
+      configure(ssh.run, host, changes)
       io.err(`${command === "config set" ? "Set" : "Removed"} ${[...Object.keys(changes.set), ...changes.unset].join(", ")} on ${host}, and restarted Tug's services\n`)
-      const result = status(ssh, host)
+      const result = status(ssh.run, host)
       io.out(`${JSON.stringify(result, null, 2)}\n`)
       io.err(summary(result))
       return healthy(result) ? 0 : 1
     }
+    if (values.check) {
+      const found = await checkHost({ host, ref: values.ref ?? "main", request: deps.request ?? client(await token()), run: ssh.run, download: deps.download ?? download })
+      io.out(`${found.report}\n`)
+      if (found.root.length > 0) io.err(`${host} needs this once, as root: ${found.root.join(", ")}; tug install asks for sudo for it\n`)
+      return found.code
+    }
     const settings = command === "install" ? settingsFile(deps.env ?? process.env) : undefined
     const request = deps.request ?? client(await token())
-    const result = await deploy({ host, ref: values.ref ?? "main", request, ssh, download: deps.download ?? download, settings })
+    const result = await deploy({ host, ref: values.ref ?? "main", request, ssh, download: deps.download ?? download, settings, log: io.err })
     io.out(`${JSON.stringify(result, null, 2)}\n`)
     io.err(`Installed ${result.version.slice(0, 7)} on ${result.host}\n`)
     return 0
