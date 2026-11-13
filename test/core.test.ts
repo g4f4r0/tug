@@ -7,7 +7,7 @@ import { describeState, state, type PullFacts } from "../src/core/state.ts"
 const HEAD = "a".repeat(40)
 
 const facts = (overrides: Partial<PullFacts> = {}): PullFacts => ({
-  repo: "g4f4r0/opencode-plugins",
+  repo: "octocat/hello-world",
   number: 12,
   state: "open",
   merged: false,
@@ -17,7 +17,7 @@ const facts = (overrides: Partial<PullFacts> = {}): PullFacts => ({
   head: HEAD,
   base: "main",
   title: "docs: Fix a typo",
-  author: "g4f4r0",
+  author: "octocat",
   labels: [],
   checks: [{ name: "test", status: "completed", conclusion: "success" }],
   statuses: [],
@@ -64,7 +64,7 @@ describe("filters", () => {
     expect(passes(["**/*.md"], "a.md")).toBe(true)
     expect(passes(["dependabot[bot]"], "dependabot[bot]")).toBe(true)
     expect(passes(["dependabot[bot]"], "dependabotb")).toBe(false)
-    expect(passes(["G4F4R0"], "g4f4r0", { caseless: true })).toBe(true)
+    expect(passes(["OctoCat"], "octocat", { caseless: true })).toBe(true)
   })
 
   it("match file names with newlines, so an excluded directory can't be escaped", () => {
@@ -93,7 +93,7 @@ describe("policy", () => {
     expect(parsePolicy(null)).toEqual({})
     expect(() => parsePolicy(JSON.stringify({ merge: { risk: "low", filter: { paths: ["!x"] } } }))).toThrow()
     expect(() => parsePolicy("{")).toThrow()
-    expect(parsePolicy(JSON.stringify({ $schema: "s", merge: { risk: "low", filters: { authors: ["g4f4r0"] } }, rules: ["r"] })).merge?.risk).toBe("low")
+    expect(parsePolicy(JSON.stringify({ $schema: "s", merge: { risk: "low", filters: { authors: ["octocat"] } }, rules: ["r"] })).merge?.risk).toBe("low")
   })
 
   it("defaults review to both passes, no drafts, no max and no filters", () => {
@@ -112,7 +112,7 @@ describe("policy", () => {
 })
 
 describe("decide", () => {
-  const POLICY: Policy = { merge: { risk: "low", filters: { authors: ["g4f4r0"], branches: ["!master"], paths: ["!config/settings_data.json", "!locales/**"] } } }
+  const POLICY: Policy = { merge: { risk: "low", filters: { authors: ["octocat"], branches: ["!master"], paths: ["!config/settings_data.json", "!locales/**"] } } }
   const review = (overrides: Partial<Review> = {}): Review => Review.parse({ version: 1, head: HEAD, findings: [], risk: "low", merge: true, reason: "Docs only.", ...overrides })
   const run = (overrides: { facts?: Partial<PullFacts>; review?: Review | null; policy?: Policy; files?: string[] } = {}) =>
     decide({ state: state(facts(overrides.facts)), review: overrides.review === undefined ? review() : overrides.review, policy: overrides.policy ?? POLICY, files: overrides.files ?? ["README.md"] })

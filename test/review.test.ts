@@ -187,8 +187,8 @@ describe("the key service", () => {
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "k1" }
   const jwks = async () => ({ keys: [jwk] })
   const now = Date.now()
-  const config = { owners: ["g4f4r0"], workflows: ["hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"] }
-  const claims = { iss: "https://token.actions.githubusercontent.com", aud: "tug", exp: now / 1000 + 300, repository: "g4f4r0/x", repository_owner: "g4f4r0", job_workflow_ref: config.workflows[0], run_id: "1" }
+  const config = { owners: ["octocat"], workflows: ["hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"] }
+  const claims = { iss: "https://token.actions.githubusercontent.com", aud: "tug", exp: now / 1000 + 300, repository: "octocat/x", repository_owner: "octocat", job_workflow_ref: config.workflows[0], run_id: "1" }
   const jwt = (body: Record<string, unknown>, header: Record<string, unknown> = { alg: "RS256", kid: "k1" }, key = privateKey) => {
     const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
     const signed = `${part(header)}.${part(body)}`
@@ -196,7 +196,7 @@ describe("the key service", () => {
   }
 
   it("accepts only GitHub's signed token for an allowed owner and workflow", async () => {
-    await expect(verifyToken(jwt(claims), config, jwks, now)).resolves.toMatchObject({ repository: "g4f4r0/x" })
+    await expect(verifyToken(jwt(claims), config, jwks, now)).resolves.toMatchObject({ repository: "octocat/x" })
     const other = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
     const refusals: [string, string][] = [
       [jwt(claims, undefined, other), "bad signature"],
@@ -206,17 +206,17 @@ describe("the key service", () => {
       [jwt({ ...claims, iss: "https://evil" }), "wrong issuer"],
       [jwt({ ...claims, exp: now / 1000 - 1 }), "expired"],
       [jwt({ ...claims, repository_owner: "someone" }), "owner someone not allowed"],
-      [jwt({ ...claims, job_workflow_ref: "g4f4r0/x/.github/workflows/steal.yml@refs/pull/1/merge" }), "not allowed"],
+      [jwt({ ...claims, job_workflow_ref: "octocat/x/.github/workflows/steal.yml@refs/pull/1/merge" }), "not allowed"],
       [jwt({ ...claims, job_workflow_ref: "hellogafaro/tug/.github/workflows/review.yml@refs/pull/9/merge" }), "not allowed"],
     ]
     for (const [token, reason] of refusals) await expect(verifyToken(token, config, jwks, now)).rejects.toThrow(reason)
   })
 
   it("reads its settings from the environment", () => {
-    expect(keysConfig({ TUG_ACCOUNTS: "g4f4r0, hellogafaro", TUG_REVIEW_MODEL: "anthropic/claude-opus-5-5", TUG_ANTHROPIC_API_KEY: "a" })).toEqual({
+    expect(keysConfig({ TUG_ACCOUNTS: "octocat, acme", TUG_REVIEW_MODEL: "anthropic/claude-opus-5-5", TUG_ANTHROPIC_API_KEY: "a" })).toEqual({
       models: { code: { provider: "anthropic", baseUrl: "https://api.anthropic.com", key: "a", model: "claude-opus-5-5" }, security: { provider: "anthropic", baseUrl: "https://api.anthropic.com", key: "a", model: "claude-opus-5-5" } },
-      owners: ["g4f4r0", "hellogafaro"],
-      workflows: config.workflows,
+      owners: ["octocat", "acme"],
+      workflows: ["g4f4r0/tug/.github/workflows/review.yml@refs/heads/main", "hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"],
     })
     expect(() => keysConfig({ TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" })).toThrow("Set TUG_ACCOUNTS")
   })
@@ -359,7 +359,7 @@ describe("merge", () => {
     const request = (async (method: string, path: string) => {
       const route = path.split("?")[0]!
       calls.push(`${method} ${route}`)
-      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD, ref: "docs/typo", repo: { full_name: "g4f4r0/x" } }, base: { ref: "main", sha: "c".repeat(40) } }
+      if (method === "GET" && route.endsWith("/pulls/5")) return { state: merged ? "closed" : "open", merged, draft: false, mergeable: true, mergeable_state: "clean", title: "docs: Fix typo", changed_files: (overrides.files ?? [{}]).length, user: { login: "octocat" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD, ref: "docs/typo", repo: { full_name: "octocat/x" } }, base: { ref: "main", sha: "c".repeat(40) } }
       if (route.endsWith("/pulls")) return []
       if (method === "GET" && route.endsWith("/git/refs/heads/docs/typo")) return { object: { sha: HEAD } }
       if (route.endsWith("/actions/runs")) return { workflow_runs: [] }
@@ -383,20 +383,20 @@ describe("merge", () => {
   }
   const run = (overrides: Parameters<typeof github>[0] = {}) => {
     const t = github(overrides)
-    return runMerge({ request: t.request, repo: "g4f4r0/x", number: 5, review: overrides.review === undefined ? review : overrides.review, base: overrides.base, wait: async () => {} }).then((result) => ({ ...result, calls: t.calls }))
+    return runMerge({ request: t.request, repo: "octocat/x", number: 5, review: overrides.review === undefined ? review : overrides.review, base: overrides.base, wait: async () => {} }).then((result) => ({ ...result, calls: t.calls }))
   }
 
   it("merges the exact head by squash, ignoring its own running check, and reads the merge back", async () => {
     const result = await run()
     expect(result).toMatchObject({ merged: true, decision: { action: "merge", reason: "Docs only." } })
-    expect(result.calls).toContain("PUT /repos/g4f4r0/x/pulls/5/merge")
-    expect(result.calls).toContain("DELETE /repos/g4f4r0/x/git/refs/heads/docs/typo")
+    expect(result.calls).toContain("PUT /repos/octocat/x/pulls/5/merge")
+    expect(result.calls).toContain("DELETE /repos/octocat/x/git/refs/heads/docs/typo")
   })
 
   it("holds with needs:human and one comment, or without the run's review", async () => {
     const held = await run({ review: { ...review, merge: false, reason: "Prices change." } })
     expect(held.decision).toEqual({ action: "hold", reason: "Prices change." })
-    expect(held.calls.filter((call) => call.startsWith("POST") && !call.endsWith("/graphql"))).toEqual(["POST /repos/g4f4r0/x/labels", "POST /repos/g4f4r0/x/issues/5/labels", "POST /repos/g4f4r0/x/issues/5/comments"])
+    expect(held.calls.filter((call) => call.startsWith("POST") && !call.endsWith("/graphql"))).toEqual(["POST /repos/octocat/x/labels", "POST /repos/octocat/x/issues/5/labels", "POST /repos/octocat/x/issues/5/comments"])
     const unreviewed = await run({ review: null })
     expect(unreviewed.decision).toEqual({ action: "hold", reason: `No review of ${HEAD.slice(0, 7)} was found.` })
     expect(unreviewed.calls.some((call) => call.startsWith("PUT"))).toBe(false)
@@ -423,7 +423,7 @@ describe("merge", () => {
   it("checks both sides of a rename, read by the head commit", async () => {
     const renamed = await run({ files: [{ filename: "docs/ci.yml", previous_filename: ".github/workflows/ci.yml", status: "renamed" }] })
     expect(renamed.decision).toEqual({ action: "hold", reason: ".github/workflows/ci.yml changes the repository's GitHub configuration." })
-    expect(renamed.calls).toContain(`GET /repos/g4f4r0/x/compare/${"c".repeat(40)}...${HEAD}`)
+    expect(renamed.calls).toContain(`GET /repos/octocat/x/compare/${"c".repeat(40)}...${HEAD}`)
   })
 
   it("only reviews without a merge policy, and waits on another workflow's running check", async () => {
@@ -443,7 +443,7 @@ describe("runReview", () => {
     const request = (async (method: string, path: string, options?: { body?: unknown }) => {
       const route = path.split("?")[0]!
       calls.push({ method, route, body: options?.body })
-      if (method === "GET" && route.endsWith("/pulls/7")) return { title: "t", body: "", draft: overrides.draft ?? false, changed_files: files.length, user: { login: overrides.author ?? "g4f4r0" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: overrides.base ?? "main", sha: "c".repeat(40) } }
+      if (method === "GET" && route.endsWith("/pulls/7")) return { title: "t", body: "", draft: overrides.draft ?? false, changed_files: files.length, user: { login: overrides.author ?? "octocat" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: overrides.base ?? "main", sha: "c".repeat(40) } }
       if (route.includes("/contents/tug.json")) {
         if (overrides.policy === undefined) throw Object.assign(new Error("404"), { status: 404 })
         return { content: Buffer.from(JSON.stringify(overrides.policy)).toString("base64") }
