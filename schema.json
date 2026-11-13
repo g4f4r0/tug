@@ -130,6 +130,6 @@
     }
   },
   "additionalProperties": false,
-  "$id": "https://raw.githubusercontent.com/hellogafaro/tug/main/schema.json",
+  "$id": "https://raw.githubusercontent.com/g4f4r0/tug/main/schema.json",
   "title": "tug.json"
 }

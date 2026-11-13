@@ -12,7 +12,7 @@ Tug never runs the pull request's code: it reads the change through the GitHub A
 
 ## Install
 
-The CLI needs Node 24 or later. Run it as `npx -y github:hellogafaro/tug#main <command>`; the commands below write `tug` for that.
+The CLI needs Node 24 or later. Run it as `npx -y github:g4f4r0/tug#main <command>`; the commands below write `tug` for that.
 
 ### On GitHub's runners
 

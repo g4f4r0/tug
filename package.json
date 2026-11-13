@@ -4,7 +4,7 @@
   "description": "PR review, security review and merge in CI, on your own runners, with any model.",
   "license": "MIT",
   "type": "module",
-  "repository": "github:hellogafaro/tug",
+  "repository": "github:g4f4r0/tug",
   "engines": {
     "node": ">=22"
   },

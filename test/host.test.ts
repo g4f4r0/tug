@@ -17,7 +17,7 @@ function fakeRun(answers: { status?: string } = {}) {
 }
 
 const commits = (sha: string): Request => (async (_method: string, path: string) => {
-  expect(path).toBe("/repos/hellogafaro/tug/commits/main")
+  expect(path).toBe("/repos/g4f4r0/tug/commits/main")
   return { sha }
 }) as Request
 
@@ -51,7 +51,7 @@ describe("tug install and update", () => {
     const { run, calls } = fakeRun()
     const result = await cli(["install", "--host", "box"], { run, request: commits(SHA), env: ENV })
     expect(result.code).toBe(0)
-    expect(downloads).toEqual([`https://codeload.github.com/hellogafaro/tug/tar.gz/${SHA}`])
+    expect(downloads).toEqual([`https://codeload.github.com/g4f4r0/tug/tar.gz/${SHA}`])
     expect(calls.map((call) => call.args.at(-1))).toEqual([FETCH, SETTINGS, INSTALL])
     expect(calls[0]).toEqual(ssh(FETCH, TARBALL))
     expect(calls[2]!.input).toBeUndefined()
@@ -87,7 +87,7 @@ describe("tug install and update", () => {
   it("updates without touching settings, at the ref given", async () => {
     const { run, calls } = fakeRun()
     const request = (async (_method: string, path: string) => {
-      expect(path).toBe("/repos/hellogafaro/tug/commits/feat/own-host")
+      expect(path).toBe("/repos/g4f4r0/tug/commits/feat/own-host")
       return { sha: SHA }
     }) as Request
     const result = await cli(["update", "--host", "box", "--ref", "feat/own-host"], { run, request, env: ENV })

@@ -1,4 +1,4 @@
-module github.com/hellogafaro/tug/runners/tug-runners
+module github.com/g4f4r0/tug/runners/tug-runners
 
 go 1.27.4
 

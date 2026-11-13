@@ -49,7 +49,7 @@ jobs:
       - name: Get Tug
         run: |
           mkdir "$RUNNER_TEMP/tug"
-          curl -fsSL --retry 3 https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
+          curl -fsSL --retry 3 https://codeload.github.com/g4f4r0/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
           npm ci --prefix "$RUNNER_TEMP/tug" --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier
       # On a runner with a Tug key service (TUG_KEYS), the job's OIDC token stands in for the provider settings.
       - id: review
