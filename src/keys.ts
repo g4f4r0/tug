@@ -135,6 +135,37 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
   })
 }
 
+/** The test question: tiny, with a strict schema, so it checks the model's name, key, base URL and structured output. */
+const CHECK = {
+  system: "Answer with JSON only.",
+  user: 'Answer {"ok": true}.',
+  schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false },
+  name: "check",
+}
+
+/**
+ * Asks each pass's model the test question with the service's own settings, once for passes that share them, and
+ * returns what failed, one entry each; empty when every model answered.
+ */
+export async function checkModels(config: Pick<KeysConfig, "models">, request: typeof fetch = fetch): Promise<string[]> {
+  const timed: typeof fetch = (url, init) => request(url, { ...init, signal: AbortSignal.timeout(120_000) })
+  const groups = new Map<string, Pass[]>()
+  for (const pass of PASSES) {
+    const same = JSON.stringify(config.models[pass])
+    groups.set(same, [...(groups.get(same) ?? []), pass])
+  }
+  const problems: string[] = []
+  for (const passes of groups.values()) {
+    const settings = config.models[passes[0]!]
+    try {
+      JSON.parse(await callProvider(settings, CHECK, timed))
+    } catch (error) {
+      problems.push(`${passes.join(" and ")} (${settings.provider}/${settings.model}): ${(error as Error).message}`)
+    }
+  }
+  return problems
+}
+
 /** The key service's settings from its environment, named as in `providerSettings`, plus `TUG_ACCOUNTS`. */
 export function keysConfig(env: NodeJS.ProcessEnv = process.env): KeysConfig {
   if (!env.TUG_ACCOUNTS) throw new Error("Set TUG_ACCOUNTS")

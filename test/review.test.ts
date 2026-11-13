@@ -5,7 +5,7 @@ import { z } from "zod"
 import type { Review } from "../src/contracts.ts"
 import { ask, modelSettings } from "../src/engine.ts"
 import type { Request } from "../src/forge/github.ts"
-import { keysConfig, keysServer, verifyToken } from "../src/keys.ts"
+import { checkModels, keysConfig, keysServer, verifyToken } from "../src/keys.ts"
 import { runMerge } from "../src/merge.ts"
 import { pullFiles } from "../src/forge/github.ts"
 import { combine, commentableLines, describePull, readMarker, render, runReview, writeMarker } from "../src/review.ts"
@@ -179,6 +179,43 @@ describe("the engine", () => {
     expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ pass: "security", system: "s", user: "u", schema: answerSchema, name: "t" })
     expect(modelSettings({ ...env, TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" }).code).toMatchObject({ provider: "openai", key: "k" })
     expect(() => modelSettings({ TUG_KEYS: "http://keys" })).toThrow("id-token: write")
+  })
+
+  it("names the key service and what usually blocks it when no answer comes, not just fetch failed", async () => {
+    const fake = (async (url: string) => {
+      if (url.startsWith("https://t/")) return new Response(JSON.stringify({ value: "jwt" }))
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }) })
+    }) as unknown as typeof fetch
+    const settings = modelSettings({ TUG_KEYS: "http://172.30.99.1:8787", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }, fake)
+    await expect(ask({ settings: settings.code, system: "s", user: "u", schema, name: "t", request: fake, retryWaitMs: 0 })).rejects.toThrow(
+      "Can't reach the key service at http://172.30.99.1:8787 (UND_ERR_CONNECT_TIMEOUT). On the runner's host, tug status checks it; a host firewall may drop traffic from the Docker network tug.",
+    )
+    // An answer that is an error keeps its own message.
+    const refusing = (async (url: string) => new Response(url.startsWith("https://t/") ? JSON.stringify({ value: "jwt" }) : "refused", { status: url.startsWith("https://t/") ? 200 : 403 })) as unknown as typeof fetch
+    await expect(ask({ settings: modelSettings({ TUG_KEYS: "http://k", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }, refusing).code, system: "s", user: "u", schema, name: "t", request: refusing, retryWaitMs: 0 })).rejects.toThrow("The key service answered 403: refused")
+  })
+})
+
+describe("the model check", () => {
+  const openai = { provider: "openai" as const, baseUrl: "http://p/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" }
+
+  it("asks a model once for passes that share its settings, with the strict test question", async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fake = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }))
+    }) as unknown as typeof fetch
+    expect(await checkModels({ models: { code: openai, security: openai } }, fake)).toEqual([])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url).toBe("http://p/v1/chat/completions")
+    expect(JSON.parse(String(calls[0]!.init.body))).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", response_format: { type: "json_schema", json_schema: { name: "check", strict: true } } })
+  })
+
+  it("says which pass and model failed, and why", async () => {
+    const fake = (async (url: string) => (url.includes("bad") ? new Response("no such model", { status: 404 }) : new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] })))) as unknown as typeof fetch
+    expect(await checkModels({ models: { code: openai, security: { ...openai, baseUrl: "http://bad/v1", model: "gpt-x" } } }, fake)).toEqual(["security (openai/gpt-x): OpenAI answered 404: no such model"])
+    const prose = (async () => new Response(JSON.stringify({ choices: [{ message: { content: "Sure! ok" } }] }))) as unknown as typeof fetch
+    expect(await checkModels({ models: { code: openai, security: openai } }, prose)).toEqual([expect.stringMatching(/^code and security \(openai\/gpt-6\.1-sol\): .*JSON/u)])
   })
 })
 

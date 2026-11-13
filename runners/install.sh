@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Installs Tug's runner service and key service on a Debian host, with Docker and nftables from Debian's own packages
-# when they are missing. Every setting is an environment variable in /etc/tug/tug.env (the README lists them).
+# Installs Tug's runner service and key service on a Debian host, or one built on Debian such as Ubuntu, with Docker and
+# nftables from the distribution's own packages when they are missing. Every setting is an environment variable in
+# /etc/tug/tug.env (the README lists them). It ends by checking that a job's container reaches the key service.
 #
 #   sudo runners/install.sh <user>
 #   sudo runners/install.sh --uninstall
@@ -8,9 +9,13 @@
 # <user> runs both services.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
-grep -Eqx 'ID="?debian"?' /etc/os-release 2>/dev/null || { echo "Tug's runners need Debian." >&2; exit 1; }
+# Debian itself, or a distribution that names Debian in ID_LIKE, as Ubuntu does.
+family=$(. /etc/os-release 2>/dev/null && echo " ${ID:-} ${ID_LIKE:-} ")
+[[ $family == *" debian "* ]] || { echo "Tug's runners need Debian or a distribution built on it, such as Ubuntu." >&2; exit 1; }
 [[ -d /run/systemd/system ]] || { echo "Tug's runners need systemd." >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
+# ufw drops what reaches the host from the Docker network tug unless this rule lets jobs reach the key service.
+ufw_rule=(from 172.30.99.0/24 to 172.30.99.1 port 8787 proto tcp)
 
 if [[ ${1:-} == --uninstall ]]; then
   systemctl disable --now tug-runners.service tug-keys.service tug-cleanup.timer 2>/dev/null || true
@@ -18,6 +23,7 @@ if [[ ${1:-} == --uninstall ]]; then
   docker ps -q --filter label=tug.scope | xargs -r docker rm -f >/dev/null
   docker network rm tug >/dev/null 2>&1 || true
   nft delete table inet tug_egress 2>/dev/null || true
+  ! command -v ufw >/dev/null || ufw delete allow "${ufw_rule[@]}" >/dev/null 2>&1 || true
   rm -rf /usr/local/lib/tug /etc/systemd/system/tug-{runners,keys,cleanup}.service /etc/systemd/system/tug-cleanup.timer
   systemctl daemon-reload
   echo "Uninstalled. /etc/tug/tug.env is kept."
@@ -58,6 +64,7 @@ docker run --rm -v "$here/tug-runners:/src:ro" -v "$build:/out" -w /src -e CGO_E
 install -m 0755 "$build/tug-runners" /usr/local/lib/tug/tug-runners
 
 install -m 0644 "$here/egress.nft" /usr/local/lib/tug/egress.nft
+install -m 0755 "$here/reach.sh" "$here/config.sh" /usr/local/lib/tug/
 for unit in tug-runners tug-keys; do
   sed -e "s|@USER@|$user|" "$here/$unit.service" >"/etc/systemd/system/$unit.service"
 done
@@ -66,6 +73,8 @@ install -m 0644 "$here/tug-cleanup.service" "$here/tug-cleanup.timer" /etc/syste
 
 systemctl daemon-reload
 nft -f /usr/local/lib/tug/egress.nft
+# Added even while ufw is off, so turning it on later keeps jobs working; ufw skips a rule it already has.
+! command -v ufw >/dev/null || ufw allow "${ufw_rule[@]}" comment "Tug key service" >/dev/null
 # Restart, not just start, so a re-run loads the new rules and code. Running jobs are left alone: their containers
 # belong to Docker, and the runner service adopts them when it starts.
 for unit in tug-keys tug-runners; do
@@ -73,4 +82,9 @@ for unit in tug-keys tug-runners; do
   systemctl restart "$unit.service"
 done
 systemctl enable --now tug-cleanup.timer
-echo "Installed: the runner service and the key service on 172.30.99.1:8787. Logs: journalctl -u tug-runners"
+# Every job reaches the key service from the network tug; a firewall that blocks it fails every review, so say so now.
+if ! reached=$(/usr/local/lib/tug/reach.sh); then
+  echo "Installed, but jobs can't reach the key service: $reached" >&2
+  exit 1
+fi
+echo "Installed: the runner service and the key service on 172.30.99.1:8787, which jobs reach. Logs: tug logs"
