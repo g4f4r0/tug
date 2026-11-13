@@ -187,7 +187,7 @@ describe("the key service", () => {
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "k1" }
   const jwks = async () => ({ keys: [jwk] })
   const now = Date.now()
-  const config = { owners: ["octocat"], workflows: ["hellogafaro/tug/.github/workflows/review.yml@refs/heads/main"] }
+  const config = { owners: ["octocat"], workflows: ["g4f4r0/tug/.github/workflows/review.yml@refs/heads/main"] }
   const claims = { iss: "https://token.actions.githubusercontent.com", aud: "tug", exp: now / 1000 + 300, repository: "octocat/x", repository_owner: "octocat", job_workflow_ref: config.workflows[0], run_id: "1" }
   const jwt = (body: Record<string, unknown>, header: Record<string, unknown> = { alg: "RS256", kid: "k1" }, key = privateKey) => {
     const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
@@ -207,7 +207,7 @@ describe("the key service", () => {
       [jwt({ ...claims, exp: now / 1000 - 1 }), "expired"],
       [jwt({ ...claims, repository_owner: "someone" }), "owner someone not allowed"],
       [jwt({ ...claims, job_workflow_ref: "octocat/x/.github/workflows/steal.yml@refs/pull/1/merge" }), "not allowed"],
-      [jwt({ ...claims, job_workflow_ref: "hellogafaro/tug/.github/workflows/review.yml@refs/pull/9/merge" }), "not allowed"],
+      [jwt({ ...claims, job_workflow_ref: "g4f4r0/tug/.github/workflows/review.yml@refs/pull/9/merge" }), "not allowed"],
     ]
     for (const [token, reason] of refusals) await expect(verifyToken(token, config, jwks, now)).rejects.toThrow(reason)
   })

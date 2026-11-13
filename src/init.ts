@@ -83,7 +83,7 @@ export function init(dir: string, options: InitOptions): InitResult {
   if (test) lines.push("  test:", `    name: ${test.name}`, `    runs-on: ${runsOn}`, "    timeout-minutes: 20", "    steps:", "      - uses: actions/checkout@v5", ...test.steps)
   lines.push(
     "  review:",
-    "    uses: hellogafaro/tug/.github/workflows/review.yml@main",
+    "    uses: g4f4r0/tug/.github/workflows/review.yml@main",
     "    with:",
     `      runs-on: '${runsOn}'`,
     // Only Tug's own secrets, never all of them. Without them, on runners with a Tug key service, none is needed.
@@ -99,7 +99,7 @@ export function init(dir: string, options: InitOptions): InitResult {
     lines.push(
       "  merge:",
       `    needs: [${test ? "test, " : ""}review]`,
-      "    uses: hellogafaro/tug/.github/workflows/merge.yml@main",
+      "    uses: g4f4r0/tug/.github/workflows/merge.yml@main",
       "    with:",
       `      runs-on: '${runsOn}'`,
       "      review: ${{ needs.review.outputs.review }}",

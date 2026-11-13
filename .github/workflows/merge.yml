@@ -32,7 +32,7 @@ jobs:
       - name: Get Tug
         run: |
           mkdir "$RUNNER_TEMP/tug"
-          curl -fsSL --retry 3 https://codeload.github.com/hellogafaro/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
+          curl -fsSL --retry 3 https://codeload.github.com/g4f4r0/tug/tar.gz/main | tar -xz --strip-components=1 -C "$RUNNER_TEMP/tug"
           npm ci --prefix "$RUNNER_TEMP/tug" --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier
       - run: node "$RUNNER_TEMP/tug/src/bin.ts" merge "$GITHUB_REPOSITORY#$PR"
         env:

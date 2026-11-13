@@ -12,7 +12,7 @@ interface KeysConfig {
   models: Record<Pass, ModelSettings>
   /** Accounts whose repositories' jobs may call, such as my-org. */
   owners: string[]
-  /** Workflows that may call, as `job_workflow_ref`, such as hellogafaro/tug/.github/workflows/review.yml@refs/heads/main. */
+  /** Workflows that may call, as `job_workflow_ref`, such as g4f4r0/tug/.github/workflows/review.yml@refs/heads/main. */
   workflows: string[]
 }
 
