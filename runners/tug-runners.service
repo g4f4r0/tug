@@ -1,18 +1,19 @@
 [Unit]
 Description=Tug runners
-Wants=network-online.target docker.service tug-keys.service
-After=network-online.target docker.service tug-keys.service
+Requires=tug-docker.service
+Wants=tug-keys.service
+After=tug-docker.service tug-keys.service
+PartOf=tug-docker.service
 
 [Service]
-User=@USER@
-SupplementaryGroups=docker
-EnvironmentFile=-/etc/tug/tug.env
+EnvironmentFile=-%h/.config/tug/tug.env
+Environment=DOCKER_HOST=unix://%t/tug/docker.sock
 # No runner without the egress rules: loading them is idempotent, and a failure keeps the service down.
-ExecStartPre=+/usr/sbin/nft -f /usr/local/lib/tug/egress.nft
-ExecStart=/usr/local/lib/tug/tug-runners
+ExecStartPre=%h/.local/share/tug/egress.sh
+ExecStart=%h/.local/share/tug/tug-runners
 Restart=always
 RestartSec=30
 TimeoutStopSec=30
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

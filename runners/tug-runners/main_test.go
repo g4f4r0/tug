@@ -456,6 +456,35 @@ func TestDockerTimesOutEveryCommandButWait(t *testing.T) {
 	}
 }
 
+func TestDockerGetsDockerHostButNoSecret(t *testing.T) {
+	dir := t.TempDir()
+	script := dir + "/docker"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nenv > "+dir+"/env\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousBin := dockerBin
+	dockerBin = script
+	defer func() { dockerBin = previousBin }()
+	t.Setenv("DOCKER_HOST", "unix:///run/user/1000/tug/docker.sock")
+	t.Setenv("TUG_GITHUB_TOKEN", "ghp_secret")
+
+	if _, err := runDocker([]string{"ACTIONS_RUNNER_INPUT_JITCONFIG=config"}, "ps"); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(dir + "/env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"DOCKER_HOST=unix:///run/user/1000/tug/docker.sock\n", "ACTIONS_RUNNER_INPUT_JITCONFIG=config\n"} {
+		if !strings.Contains(string(env), want) {
+			t.Fatalf("docker's environment lacks %q:\n%s", want, env)
+		}
+	}
+	if strings.Contains(string(env), "ghp_secret") {
+		t.Fatalf("docker's environment holds the token:\n%s", env)
+	}
+}
+
 func TestCleanupServicePullsTheRunnerImageAgain(t *testing.T) {
 	unit, err := os.ReadFile("../tug-cleanup.service")
 	if err != nil {

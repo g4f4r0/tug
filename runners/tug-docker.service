@@ -1,0 +1,26 @@
+[Unit]
+Description=Tug's rootless Docker, which runs its jobs and its key service
+Documentation=https://docs.docker.com/engine/security/rootless/
+
+[Service]
+# Its own socket, data and namespace, apart from any Docker the user runs: /run/user/<id>/tug, ~/.local/share/tug/docker.
+RuntimeDirectory=tug
+Environment=XDG_RUNTIME_DIR=%t/tug XDG_DATA_HOME=%h/.local/share/tug XDG_CONFIG_HOME=%h/.config/tug
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns PATH=@PATH@
+ExecStart=@LAUNCHER@
+# No jobs without Tug's rules: a failure here stops Docker, and with it the services that need it.
+ExecStartPost=%h/.local/share/tug/egress.sh
+ExecReload=/bin/kill -s HUP $MAINPID
+Type=notify
+NotifyAccess=all
+KillMode=mixed
+Delegate=yes
+TimeoutStartSec=120
+Restart=always
+RestartSec=10
+LimitNOFILE=infinity
+LimitNPROC=infinity
+TasksMax=infinity
+
+[Install]
+WantedBy=default.target

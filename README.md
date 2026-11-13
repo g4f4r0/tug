@@ -22,10 +22,10 @@ The CLI needs Node 24 or later. Run it as `npx -y github:g4f4r0/tug#main <comman
 
 ### On your own server
 
-Use this for private repositories only. Each job runs in a fresh Docker container that is deleted after it, with capped CPU and memory, no secrets, and no access to the server or its network. A key service on the server holds the model keys, so repositories need no secrets.
+Use this for private repositories only. Tug runs as the user you install it as, never as root, with its own rootless Docker. Each job runs in a fresh container that is deleted after it, with capped CPU and memory, no secrets, and no access to the server, its network or your tailnet. A key service on the server holds the model keys, so repositories need no secrets.
 
 1. Create a classic token with the `repo` and `admin:org` scopes from [this link](https://github.com/settings/tokens/new?description=Tug&scopes=repo,admin:org), or with the GitHub CLI run `gh auth refresh -s admin:org` and use `gh auth token`. It must be classic, because one classic token serves all your accounts. It acts as you, so it manages runners only in organizations you own and repositories you own, and it can reach every repository you can, so keep the server private.
-2. Get a Debian or Ubuntu server with SSH and `sudo`. Nothing else is needed: `tug install` adds Docker and the rest. Where `sudo` asks for a password, run the `tug` commands below in a terminal, and type it when asked.
+2. Get a Debian or Ubuntu server with SSH. `tug install` first checks what the server lacks. What only root can install, such as Docker, `uidmap` or `rootlesskit`, it installs once with `sudo`, which asks for your password when you run it in a terminal; everything else runs as you. `tug install --host <ssh-host> --check` prints that check and installs nothing.
 3. Install, with the settings in your environment:
    ```sh
    export TUG_GITHUB_TOKEN="$(gh auth token)" TUG_ACCOUNTS=my-user,my-org \
@@ -33,12 +33,12 @@ Use this for private repositories only. Each job runs in a fresh Docker containe
    tug install --host <ssh-host>
    ```
    Any secrets tool's `run` wrapper works in place of `export`. The install ends by checking that a job's container reaches the key service, and stops with the reason when it can't.
-4. Check it: `tug status --host <ssh-host>` shows every service `active`, `keys` `ok` when jobs reach the key service, and `model` `ok` when each model answers a test question with your settings.
+4. Check it: `tug status --host <ssh-host>` shows every service `active` (`tug-docker`, `tug-keys`, `tug-runners`), `keys` `ok` when jobs reach the key service, and `model` `ok` when each model answers a test question with your settings.
 5. In each repository, run `tug init --merge --runs-on tug`, then commit and push.
 
 ## Common tasks
 
-1. Update the server to the latest Tug with `tug update --host <h>`. Its settings and running jobs stay.
+1. Update the server to the latest Tug with `tug update --host <h>`. Its settings and running jobs stay. A server that ran an older Tug as root moves over: the update's one fix as root moves its settings to your user and removes the old Tug.
 2. Change server settings with `tug config set --host <h> TUG_ACCOUNTS=my-user,my-org`, which keeps the others, restarts Tug and prints `tug status`. Give a secret by name alone, such as `tug config set --host <h> TUG_GITHUB_TOKEN`: it comes from your environment, or Tug asks for it without showing it, so it stays out of your shell's history. `tug config unset --host <h> TUG_SECURITY_MODEL` removes one, and `tug config list --host <h>` prints the names set, never a value.
 3. Read the server's logs with `tug logs --host <h>`. `--lines 200` shows more.
 4. A pull request labelled `needs:human`: read Tug's comment, then fix and push, or merge it yourself.
@@ -54,8 +54,8 @@ Use this for private repositories only. Each job runs in a fresh Docker containe
 
 Run `tug status --host <h>`; its `keys` and `model` say what is wrong.
 
-1. `keys` timed out: a host firewall drops what jobs send to the key service. `tug install` adds the rule to ufw; another firewall must allow `172.30.99.0/24` to `172.30.99.1` port `8787/tcp`, and nothing else is needed.
-2. `keys` says nothing listens: the key service is down. `tug logs --host <h>` says why.
+1. `keys` says nothing listens, or timed out: the key service is down, or Tug's Docker is. `tug logs --host <h>` says why. Jobs reach the key service inside Tug's own Docker, so the server's firewall never stands between them.
+2. A service isn't `active`: `tug logs --host <h>` says why, and `tug install --host <h> --check` shows what the server lacks.
 3. `model` shows the provider's answer, such as a wrong model name, key or base URL. Fix it with `tug config set`.
 
 ## tug.json
