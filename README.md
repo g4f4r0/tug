@@ -34,7 +34,7 @@ Use this for private repositories only. Tug runs as the user you install it as, 
    ```
    Any secrets tool's `run` wrapper works in place of `export`. The install ends by checking that a job's container reaches the key service, and stops with the reason when it can't.
 4. Check it: `tug status --host <ssh-host>` shows every service `active` (`tug-docker`, `tug-keys`, `tug-runners`), `keys` `ok` when jobs reach the key service, and `model` `ok` when each model answers a test question with your settings.
-5. In each repository, run `tug init --merge --runs-on tug`, then commit and push.
+5. In each repository, run `tug init --merge --runs-on tug`, then commit and push. Its workflow passes no secrets: the key service holds the model keys, and a model key that reaches a job on your server anyway is never used, with a warning that names it.
 
 ## Common tasks
 

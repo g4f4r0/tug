@@ -27,10 +27,18 @@ describe("tug init", () => {
     expect(workflow).toContain("    needs: [test, review]")
     expect(workflow).toContain("      review: ${{ needs.review.outputs.review }}")
     expect(workflow).toContain("          package-manager-cache: false\n")
-    expect(workflow).toContain("    secrets:\n      TUG_OPENAI_API_KEY: ${{ secrets.TUG_OPENAI_API_KEY }}\n      TUG_OPENAI_BASE_URL: ${{ secrets.TUG_OPENAI_BASE_URL }}\n      TUG_ANTHROPIC_API_KEY: ${{ secrets.TUG_ANTHROPIC_API_KEY }}\n      TUG_ANTHROPIC_BASE_URL: ${{ secrets.TUG_ANTHROPIC_BASE_URL }}\n      TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}\n      TUG_REVIEW_REASONING_EFFORT: ${{ secrets.TUG_REVIEW_REASONING_EFFORT }}\n      TUG_SECURITY_MODEL: ${{ secrets.TUG_SECURITY_MODEL }}\n      TUG_SECURITY_REASONING_EFFORT: ${{ secrets.TUG_SECURITY_REASONING_EFFORT }}\n    permissions:")
-    expect(workflow).not.toContain("inherit")
+    // Tug's own runners: their key service holds the model keys, so no secret is passed.
+    expect(workflow).toContain(`      runs-on: '["tug"]'\n    permissions:`)
+    expect(workflow).not.toContain("secrets")
     expect(JSON.parse(files[1]!.content)).toEqual({ merge: { risk: "low" } })
     expect(notes).toEqual([])
+  })
+
+  it("passes Tug's own secrets, and no others, only to GitHub's runners", () => {
+    const github = init(repo({ "package.json": scripts(["test"]), "package-lock.json": "" }), { merge: true, runsOn: ["ubuntu-latest"] }).files[0]!.content
+    expect(github).toContain("    secrets:\n      TUG_OPENAI_API_KEY: ${{ secrets.TUG_OPENAI_API_KEY }}\n      TUG_OPENAI_BASE_URL: ${{ secrets.TUG_OPENAI_BASE_URL }}\n      TUG_ANTHROPIC_API_KEY: ${{ secrets.TUG_ANTHROPIC_API_KEY }}\n      TUG_ANTHROPIC_BASE_URL: ${{ secrets.TUG_ANTHROPIC_BASE_URL }}\n      TUG_REVIEW_MODEL: ${{ secrets.TUG_REVIEW_MODEL }}\n      TUG_REVIEW_REASONING_EFFORT: ${{ secrets.TUG_REVIEW_REASONING_EFFORT }}\n      TUG_SECURITY_MODEL: ${{ secrets.TUG_SECURITY_MODEL }}\n      TUG_SECURITY_REASONING_EFFORT: ${{ secrets.TUG_SECURITY_REASONING_EFFORT }}\n    permissions:")
+    expect(github).not.toContain("inherit")
+    for (const runsOn of [["tug"], ["self-hosted", "linux"], ["ubuntu-latest", "tug"]]) expect(init(repo({ "layout/theme.liquid": "" }), { merge: false, runsOn }).files[0]!.content).not.toContain("secrets")
   })
 
   it("uses bun or npm from the lockfile", () => {
