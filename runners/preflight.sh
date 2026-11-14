@@ -23,6 +23,7 @@ launcher() { has dockerd-rootless.sh || [[ -x /usr/share/docker.io/contrib/docke
 # Whether a user has at least 65536 subordinate IDs in a file such as /etc/subuid, listed by name or by number.
 subids() { awk -F: -v name="$1" -v id="$(id -u "$1")" '$1 == name || $1 == id { n += $3 } END { exit !(n >= 65536) }' "$2" 2>/dev/null; }
 restricted() { [[ $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null) == 1 ]]; }
+swap_mb() { awk 'NR > 1 { kb += $3 } END { print int(kb / 1024) }' /proc/swaps; }
 # Whether an AppArmor profile lets this rootlesskit create user namespaces.
 profiled() {
   local path file
@@ -46,7 +47,7 @@ if [[ ${1:-} == --fix ]]; then
       docker) if rootless_extras; then packages+=(docker-ce-rootless-extras); else packages+=(docker.io); fi ;;
       rootlesskit) if rootless_extras; then packages+=(docker-ce-rootless-extras); else packages+=(rootlesskit); fi ;;
       uidmap | slirp4netns | nftables) packages+=("$item") ;;
-      subuid | apparmor | userns | linger | legacy) ;;
+      subuid | apparmor | userns | linger | legacy | swap) ;;
       *) echo "Not an item: $item" >&2; exit 1 ;;
     esac
   done
@@ -86,6 +87,23 @@ EOF
         sysctl -q -p /etc/sysctl.d/90-tug-userns.conf
         ;;
       linger) loginctl enable-linger "$user" ;;
+      swap)
+        # A 4 GB swap file, kept across reboots, used only under pressure. An existing /swapfile is never reformatted.
+        if (($(swap_mb) == 0)); then
+          created=no
+          # A failed step stops the fix and removes a file it made, so the next run starts clean.
+          if [[ ! -e /swapfile ]]; then
+            fallocate -l 4G /swapfile && chmod 600 /swapfile && created=yes && mkswap /swapfile >/dev/null
+          fi && swapon /swapfile || {
+            [[ $created == no ]] || rm -f /swapfile
+            echo "Could not turn on swap at /swapfile." >&2
+            exit 1
+          }
+          grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+          echo 'vm.swappiness=10' >/etc/sysctl.d/90-tug-swap.conf
+          sysctl -q -p /etc/sysctl.d/90-tug-swap.conf
+        fi
+        ;;
       legacy)
         # A Tug from before it ran as a user: its settings move to the user, then the rest goes. Docker itself stays.
         home=$(getent passwd "$user" | cut -d: -f6)
@@ -167,6 +185,16 @@ elif pkaction --action-id org.freedesktop.login1.set-self-linger --verbose 2>/de
   report user linger "Tug enables it, as $user, so its services keep running while $user is logged out"
 else
   need_root linger "$user may not keep services running while logged out"
+fi
+# Each job gets an even share of memory. With swap, a job that needs more borrows as much again and slows down; without
+# it, the job is killed.
+free_gb=$(df --output=avail -BG / | tail -n 1 | tr -dc 0-9)
+if (($(swap_mb) > 0)); then
+  report ok swap "$(swap_mb) MB: a job that needs more than its share of memory slows down instead of failing"
+elif [[ $(findmnt -no FSTYPE /) != @(ext4|xfs) ]] || ((free_gb < 8)); then
+  report warn swap "none, and the fix makes a swap file only on ext4 or xfs with 8 GB free: a job that needs more than its share of memory fails"
+else
+  need_root swap "none: a job that needs more than its share of memory fails instead of slowing down"
 fi
 controllers=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers" 2>/dev/null)
 missing=()
