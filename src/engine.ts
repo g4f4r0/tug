@@ -26,10 +26,20 @@ export interface ModelSettings {
 /** A pass's calls go to a provider, or to a Tug key service that holds the provider settings. */
 export type PassSettings = ModelSettings | { keys: string; pass: Pass; token: () => Promise<string> }
 
-/** What a provider call gets: the prompts and the JSON schema the answer must match. */
+/** The image types both providers read. */
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const
+
+/** One image the model looks at, base64, after the user prompt that names it. */
+export interface Image {
+  mediaType: (typeof IMAGE_TYPES)[number]
+  data: string
+}
+
+/** What a provider call gets: the prompts, any images, and the JSON schema the answer must match. */
 interface Question {
   system: string
   user: string
+  images?: Image[]
   schema: Record<string, unknown>
   name: string
 }
@@ -102,7 +112,10 @@ async function openai(settings: ModelSettings, question: Question, request: type
     ...(settings.reasoningEffort ? { reasoning_effort: settings.reasoningEffort } : {}),
     messages: [
       { role: "system", content: question.system },
-      { role: "user", content: question.user },
+      {
+        role: "user",
+        content: question.images?.length ? [{ type: "text", text: question.user }, ...question.images.map((image) => ({ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } }))] : question.user,
+      },
     ],
     response_format: { type: "json_schema", json_schema: { name: question.name, strict: true, schema: question.schema } },
   }
@@ -118,7 +131,12 @@ async function anthropic(settings: ModelSettings, question: Question, request: t
     model: settings.model,
     max_tokens: 64_000,
     system: question.system,
-    messages: [{ role: "user", content: question.user }],
+    messages: [
+      {
+        role: "user",
+        content: question.images?.length ? [{ type: "text", text: question.user }, ...question.images.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }))] : question.user,
+      },
+    ],
     output_config: { format: { type: "json_schema", schema: question.schema }, ...(settings.reasoningEffort ? { effort: settings.reasoningEffort } : {}) },
   }
   const headers = { "x-api-key": settings.key, "anthropic-version": "2023-06-01" }
@@ -165,10 +183,10 @@ function jsonSchema(schema: z.ZodType): Record<string, unknown> {
  * answer that doesn't match is retried once, after `retryWaitMs` so a restarting model service is back, then thrown:
  * the caller fails closed.
  */
-export async function ask<T extends z.ZodType>(input: { settings: PassSettings; system: string; user: string; schema: T; name: string; request?: typeof fetch; retryWaitMs?: number }): Promise<z.infer<T>> {
+export async function ask<T extends z.ZodType>(input: { settings: PassSettings; system: string; user: string; images?: Image[]; schema: T; name: string; request?: typeof fetch; retryWaitMs?: number }): Promise<z.infer<T>> {
   const { settings, schema } = input
   const request = input.request ?? fetch
-  const question: Question = { system: input.system, user: input.user, schema: jsonSchema(schema), name: input.name }
+  const question: Question = { system: input.system, user: input.user, ...(input.images?.length ? { images: input.images } : {}), schema: jsonSchema(schema), name: input.name }
   let last: unknown
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, input.retryWaitMs ?? 30_000))

@@ -1,7 +1,7 @@
 import { createPublicKey, verify, type JsonWebKey } from "node:crypto"
 import { createServer, type IncomingMessage, type Server } from "node:http"
 import { z } from "zod"
-import { callProvider, KEYS_AUDIENCE, PASSES, providerSettings, type ModelSettings, type Pass } from "./engine.ts"
+import { callProvider, IMAGE_TYPES, KEYS_AUDIENCE, PASSES, providerSettings, type ModelSettings, type Pass } from "./engine.ts"
 
 const ISSUER = "https://token.actions.githubusercontent.com"
 /** The only workflow that may call: Tug's own review, from its main branch, under its old and new owner while it moves. */
@@ -61,8 +61,20 @@ const readBody = (request: IncomingMessage, limit: number) =>
     request.on("error", reject)
   })
 
-/** What a job asks: the pass, and the question for its model. */
-const AskBody = z.strictObject({ pass: z.enum(PASSES), system: z.string(), user: z.string(), schema: z.record(z.string(), z.unknown()), name: z.string() })
+/** The most images one question carries: a pull request's images and its videos' frames. */
+export const MAX_IMAGES = 16
+/** The largest question a job may send: room for MAX_IMAGES images of up to 3.5 MB each, as base64, and its text. */
+export const MAX_BODY = 80_000_000
+
+/** What a job asks: the pass, and the question for its model, with any images it looks at. */
+const AskBody = z.strictObject({
+  pass: z.enum(PASSES),
+  system: z.string(),
+  user: z.string(),
+  images: z.array(z.strictObject({ mediaType: z.enum(IMAGE_TYPES), data: z.base64() })).max(MAX_IMAGES).optional(),
+  schema: z.record(z.string(), z.unknown()),
+  name: z.string(),
+})
 
 /**
  * Serves `POST /v1/ask` for GitHub Actions jobs that prove, with their OIDC token, that they run one of the allowed
@@ -101,7 +113,7 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
       }
       let text: string
       try {
-        text = (await readBody(incoming, 8_000_000)).toString("utf8")
+        text = (await readBody(incoming, MAX_BODY)).toString("utf8")
       } catch (error) {
         if (!(error instanceof BodyTooLarge)) throw error
         outgoing.setHeader("connection", "close")
@@ -111,7 +123,7 @@ export function keysServer(config: KeysConfig, options: { request?: typeof fetch
       try {
         body = AskBody.parse(JSON.parse(text))
       } catch {
-        return fail(400, "expected { pass: code or security, system, user, schema, name }")
+        return fail(400, "expected { pass: code or security, system, user, images?, schema, name }")
       }
       const caller = `${String(claims.repository)} ${String(claims.job_workflow_ref).replace(/^.*\/workflows\//u, "")} run ${String(claims.run_id)} ${body.pass}`
       const { pass, ...question } = body
