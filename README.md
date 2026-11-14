@@ -6,9 +6,10 @@ Tug reviews pull requests for bugs and security issues with the model you choose
 
 1. A pull request opens or gets a push, and GitHub Actions runs your tests, then Tug's `review` job.
 2. The review sends the change to the model twice, once for correctness ([prompts/code.md](prompts/code.md)) and once for security ([prompts/security.md](prompts/security.md)). It posts one review with inline comments and a `risk:low`, `risk:medium` or `risk:high` label, and fails on a new critical or high finding.
-3. The `merge` job squash-merges the exact commit the review saw, when `tug.json` allows it, every check passed and no thread is open. Otherwise it labels the pull request `needs:human` and says why in one comment.
+3. Both passes also look at the media the pull request shows: images and videos in its body, in people's comments, and among the files it changes, with a video as 6 frames. They judge it as evidence of the change: an error, a broken layout or a result other than the one claimed is a finding, and so is a screenshot that shows a secret or personal data. Tug reads the media into a temporary folder and deletes it once the review is posted. Media it can't read is named in the review, so it never counts as evidence.
+4. The `merge` job squash-merges the exact commit the review saw, when `tug.json` allows it, every check passed and no thread is open. Otherwise it labels the pull request `needs:human` and says why in one comment.
 
-Tug never runs the pull request's code: it reads the change through the GitHub API. It never merges a change to `.github/`.
+Tug never runs the pull request's code: it reads the change through the GitHub API. Showing what the change does is the job of whoever opens the pull request, as screenshots and videos in its body or comments. It never merges a change to `.github/`.
 
 ## Install
 
@@ -110,5 +111,6 @@ Run `tug status --host <h>`; its `keys` and `model` say what is wrong.
 3. Pull requests from forks are skipped, because they get no secrets or write token.
 4. Your own server skips public repositories, and organizations whose Default runner group allows them.
 5. Reviews and comments come from `github-actions[bot]`.
+6. A review reads at most 10 pieces of media, over https only and up to 50 MB each, and shows the model at most 16 images, a video's frames included. The repository's token goes to GitHub only, never to another host or along a redirect. Where a runner has no ffmpeg on PATH, as neither Tug's own nor GitHub's `ubuntu-latest` has, Tug downloads a pinned static build, checked against its SHA-256, and runs it with no environment.
 
 Tug is MIT-licensed.

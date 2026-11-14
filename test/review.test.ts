@@ -5,7 +5,8 @@ import { z } from "zod"
 import type { Review } from "../src/contracts.ts"
 import { ask, modelSettings } from "../src/engine.ts"
 import type { Request } from "../src/forge/github.ts"
-import { checkModels, keysConfig, keysServer, verifyToken } from "../src/keys.ts"
+import { checkModels, keysConfig, keysServer, MAX_BODY, verifyToken } from "../src/keys.ts"
+import type { MediaOptions } from "../src/media.ts"
 import { runMerge } from "../src/merge.ts"
 import { pullFiles } from "../src/forge/github.ts"
 import { combine, commentableLines, describePull, readMarker, render, runReview, writeMarker } from "../src/review.ts"
@@ -209,6 +210,28 @@ describe("the engine", () => {
   })
 })
 
+describe("images to a model", () => {
+  const image = { mediaType: "image/png" as const, data: Buffer.from("png").toString("base64") }
+  const schema = z.strictObject({ ok: z.boolean() })
+
+  it("puts them after the text, in each provider's own form, and sends plain text without them", async () => {
+    const bodies: Record<string, unknown>[] = []
+    const fake = (async (url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+      const content = '{"ok":true}'
+      return new Response(JSON.stringify(url.endsWith("/v1/messages") ? { stop_reason: "end_turn", content: [{ type: "text", text: content }] } : { choices: [{ message: { content } }] }))
+    }) as unknown as typeof fetch
+    const openai = { provider: "openai" as const, baseUrl: "http://o/v1", key: "k", model: "gpt" }
+    const anthropic = { provider: "anthropic" as const, baseUrl: "http://a", key: "k", model: "claude" }
+    await ask({ settings: openai, system: "s", user: "u", images: [image], schema, name: "t", request: fake, retryWaitMs: 0 })
+    await ask({ settings: anthropic, system: "s", user: "u", images: [image], schema, name: "t", request: fake, retryWaitMs: 0 })
+    await ask({ settings: openai, system: "s", user: "u", schema, name: "t", request: fake, retryWaitMs: 0 })
+    expect((bodies[0]!.messages as unknown[])[1]).toEqual({ role: "user", content: [{ type: "text", text: "u" }, { type: "image_url", image_url: { url: `data:image/png;base64,${image.data}` } }] })
+    expect((bodies[1]!.messages as unknown[])[0]).toEqual({ role: "user", content: [{ type: "text", text: "u" }, { type: "image", source: { type: "base64", media_type: "image/png", data: image.data } }] })
+    expect((bodies[2]!.messages as unknown[])[1]).toEqual({ role: "user", content: "u" })
+  })
+})
+
 describe("the model check", () => {
   const openai = { provider: "openai" as const, baseUrl: "http://p/v1", key: "k", model: "gpt-6.1-sol", reasoningEffort: "high" }
 
@@ -390,10 +413,31 @@ describe("the key service", () => {
     }
   })
 
+  it("passes a job's images on to the provider, and refuses another type or too many", async () => {
+    const upstream: Record<string, unknown>[] = []
+    const keys = await serve(async (url, init) => {
+      if (url.endsWith("/jwks")) return new Response(JSON.stringify({ keys: [jwk] }))
+      upstream.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+      return ok()
+    })
+    const ask = (images: unknown) => keys.ask(jwt(claims), { body: JSON.stringify({ pass: "code", system: "s", user: "u", images, schema: {}, name: "t" }) })
+    const png = { mediaType: "image/png", data: Buffer.from("png").toString("base64") }
+    try {
+      expect((await ask([png])).status).toBe(200)
+      expect((upstream[0]!.messages as { content: unknown }[])[1]!.content).toEqual([{ type: "text", text: "u" }, { type: "image_url", image_url: { url: `data:image/png;base64,${png.data}` } }])
+      expect((await ask([{ mediaType: "image/svg+xml", data: png.data }])).status).toBe(400)
+      expect((await ask([{ mediaType: "image/png", data: "not base64!" }])).status).toBe(400)
+      expect((await ask(Array.from({ length: 17 }, () => png))).status).toBe(400)
+      expect(upstream).toHaveLength(1)
+    } finally {
+      keys.close()
+    }
+  })
+
   it("answers 413 to a body that is too large", async () => {
     const keys = await serve(async (url) => (url.endsWith("/jwks") ? new Response(JSON.stringify({ keys: [jwk] })) : ok()))
     try {
-      const response = await keys.ask(jwt(claims), { body: "x".repeat(9_000_000) })
+      const response = await keys.ask(jwt(claims), { body: "x".repeat(MAX_BODY + 1) })
       expect(response.status).toBe(413)
     } finally {
       keys.close()
@@ -487,13 +531,13 @@ describe("merge", () => {
 describe("runReview", () => {
   const PROMPTS = new URL("../prompts/", import.meta.url)
   const posted = (head: string) => ({ user: { login: "github-actions[bot]" }, commit_id: head, body: `ok\n\n${writeMarker({ version: 1, head, findings: [], risk: "low", merge: true, reason: "x" })}` })
-  function github(overrides: { policy?: unknown; draft?: boolean; author?: string; base?: string; labels?: string[]; files?: { filename: string; patch?: string }[]; reviews?: unknown[] } = {}) {
+  function github(overrides: { policy?: unknown; draft?: boolean; author?: string; base?: string; labels?: string[]; files?: { filename: string; patch?: string }[]; reviews?: unknown[]; body?: string } = {}) {
     const calls: { method: string; route: string; body?: unknown }[] = []
     const files = overrides.files ?? [{ filename: "src/a.ts", patch: "@@ -1 +1 @@\n+a" }]
     const request = (async (method: string, path: string, options?: { body?: unknown }) => {
       const route = path.split("?")[0]!
       calls.push({ method, route, body: options?.body })
-      if (method === "GET" && route.endsWith("/pulls/7")) return { title: "t", body: "", draft: overrides.draft ?? false, changed_files: files.length, user: { login: overrides.author ?? "octocat" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: overrides.base ?? "main", sha: "c".repeat(40) } }
+      if (method === "GET" && route.endsWith("/pulls/7")) return { title: "t", body: overrides.body ?? "", draft: overrides.draft ?? false, changed_files: files.length, user: { login: overrides.author ?? "octocat" }, labels: (overrides.labels ?? []).map((name) => ({ name })), head: { sha: HEAD }, base: { ref: overrides.base ?? "main", sha: "c".repeat(40) } }
       if (route.includes("/contents/tug.json")) {
         if (overrides.policy === undefined) throw Object.assign(new Error("404"), { status: 404 })
         return { content: Buffer.from(JSON.stringify(overrides.policy)).toString("base64") }
@@ -507,23 +551,53 @@ describe("runReview", () => {
     }) as unknown as Request
     return { request, calls }
   }
-  async function review(overrides: Parameters<typeof github>[0] = {}, answers: Record<string, unknown> = {}) {
+  async function review(overrides: Parameters<typeof github>[0] = {}, answers: Record<string, unknown> = {}, media?: MediaOptions) {
     const t = github(overrides)
-    const asked: { name: string; user: string }[] = []
+    const asked: { name: string; user: string; images: string[] }[] = []
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { messages: { content: string }[]; response_format: { json_schema: { name: string } } }
+      const body = JSON.parse(String(init.body)) as { messages: { content: string | { type: string; text?: string; image_url?: { url: string } }[] }[]; response_format: { json_schema: { name: string } } }
       const name = body.response_format.json_schema.name
-      asked.push({ name, user: body.messages[1]!.content })
+      const content = body.messages[1]!.content
+      const parts = typeof content === "string" ? [{ type: "text", text: content }] : content
+      asked.push({ name, user: parts.find((part) => part.type === "text")!.text!, images: parts.flatMap((part) => (part.image_url ? [part.image_url.url] : [])) })
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers[name] ?? answer()) } }] }))
     })
     const settings = { provider: "openai" as const, baseUrl: "http://m/v1", model: "gpt", key: "k" }
     try {
-      const result = await runReview({ request: t.request, repo: "o/r", number: 7, settings: () => ({ code: settings, security: settings }), reviewer: "github-actions[bot]", promptsDir: PROMPTS })
+      const result = await runReview({ request: t.request, repo: "o/r", number: 7, settings: () => ({ code: settings, security: settings }), reviewer: "github-actions[bot]", promptsDir: PROMPTS, ...(media ? { media } : {}) })
       return { result, asked, calls: t.calls, writes: t.calls.filter((call) => call.method !== "GET") }
     } finally {
       vi.unstubAllGlobals()
     }
   }
+
+  it("shows both passes the media the pull request shows, named in the text in the order the images come", async () => {
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("pixels")])
+    const fetched: string[] = []
+    const media: MediaOptions = {
+      token: "ghs_x",
+      fetch: (async (url: string | URL) => {
+        fetched.push(String(url))
+        return String(url).includes("missing") ? new Response("gone", { status: 404 }) : new Response(png)
+      }) as unknown as typeof fetch,
+    }
+    const { asked } = await review({ body: "After:\n![saved](https://example.com/after.png)\n![broken](https://example.com/missing.png)" }, {}, media)
+    expect(asked.map((ask) => ask.name).sort()).toEqual(["tug_code_review", "tug_security_review"])
+    for (const ask of asked) {
+      expect(ask.images).toEqual([`data:image/png;base64,${png.toString("base64")}`])
+      expect(ask.user).toContain('Media the pull request shows, as the images after this text, in this order (a video as its frames):\n- media 1: image (PNG, 1 KB) from the body, "saved", https://example.com/after.png\n- media 2: from the body, "broken", https://example.com/missing.png, could not be read: it answered 404. Judge the change without it.')
+    }
+    // Read once, for both passes.
+    expect(fetched).toEqual(["https://example.com/after.png", "https://example.com/missing.png"])
+  })
+
+  it("reads no media and sends plain text when the pull request shows none", async () => {
+    const fetched: string[] = []
+    const media: MediaOptions = { token: "ghs_x", fetch: (async (url: string | URL) => (fetched.push(String(url)), new Response(""))) as unknown as typeof fetch }
+    const { asked } = await review({ body: "Docs only, see https://example.com/guide" }, {}, media)
+    expect(fetched).toEqual([])
+    expect(asked.every((ask) => ask.images.length === 0 && ask.user.includes("(a video as its frames):\n(none)"))).toBe(true)
+  })
 
   it("runs both passes by default and posts one review", async () => {
     const { result, asked, writes } = await review()

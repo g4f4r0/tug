@@ -203,9 +203,10 @@ async function job(command: "review" | "merge", ref: string, io: Io): Promise<nu
     return EXIT.USAGE
   }
   try {
-    const request = client(await token())
+    const auth = await token()
+    const request = client(auth)
     if (command === "review") {
-      const result = await runReview({ request, ...target, settings: () => modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS })
+      const result = await runReview({ request, ...target, settings: () => modelSettings(), reviewer: reviewer(), promptsDir: PROMPTS, media: { token: auth, log: (line) => io.err(`Media: ${line}\n`) } })
       // No review output: the merge job then has no review of the head, and never merges it.
       if ("skipped" in result) {
         io.out(`skipped: ${result.skipped}\n`)

@@ -4,6 +4,7 @@ import { parsePolicy, reviewPolicy, riskRank, RISKS, SEVERITIES, VERSION, Review
 import { labelsMiss, passes } from "./core/filters.ts"
 import { ask, type Pass, type PassSettings } from "./engine.ts"
 import { fileAt, pullComments, pullFiles, pullInfo, pullReviews, setLabel, touchedPaths, type PullComment, type PullFile, type PullInfo, type Request } from "./forge/github.ts"
+import { mediaRefs, withMedia, type Media, type MediaOptions } from "./media.ts"
 import { holdForHuman } from "./merge.ts"
 
 const KINDS = ["code", "security"] as const
@@ -67,7 +68,7 @@ export function commentableLines(patch: string | undefined): Set<number> {
 }
 
 /** The pull request as the model reads it, and whether every patch fit. */
-export function describePull(pull: PullInfo, files: PullFile[], rules: string[], earlier: Finding[], comments: PullComment[] = []): { text: string; complete: boolean } {
+export function describePull(pull: PullInfo, files: PullFile[], rules: string[], earlier: Finding[], comments: PullComment[] = [], media: string[] = []): { text: string; complete: boolean } {
   let used = 0
   let complete = true
   const parts = files.map((file) => {
@@ -89,6 +90,7 @@ export function describePull(pull: PullInfo, files: PullFile[], rules: string[],
     `Base branch: ${pull.base}`,
     `Body:\n${pull.body || "(empty)"}`,
     `Comments, newest last:\n${comments.length > 0 ? comments.map((comment) => `- ${comment.author}: ${comment.body.slice(0, 1000)}`).join("\n") : "(none)"}`,
+    `Media the pull request shows, as the images after this text, in this order (a video as its frames):\n${media.length > 0 ? media.map((line) => `- ${line}`).join("\n") : "(none)"}`,
     `Repository rules:\n${rules.length > 0 ? rules.map((rule) => `- ${rule}`).join("\n") : "(none)"}`,
     `Findings already raised on earlier commits, not to raise again:\n${earlier.length > 0 ? earlier.map((finding) => `- ${finding.path}:${finding.line ?? 0} ${finding.title}`).join("\n") : "(none)"}`,
     `Changed files (${files.length}):\n\n${parts.join("\n\n")}`,
@@ -167,7 +169,7 @@ export const reviewedFiles = (settings: ReviewPolicy, files: PullFile[]) => file
  * Reviews the pull request's head with each kind `tug.json` turns on, posts one COMMENT review, and sets its `risk:*`
  * label. It posts nothing when the policy skips the pull request, and at `review.max` it adds `needs:human` instead.
  */
-export async function runReview(input: { request: Request; repo: string; number: number; settings: () => Record<Pass, PassSettings>; reviewer: string; promptsDir: URL }): Promise<ReviewResult> {
+export async function runReview(input: { request: Request; repo: string; number: number; settings: () => Record<Pass, PassSettings>; reviewer: string; promptsDir: URL; media?: MediaOptions }): Promise<ReviewResult> {
   const { request, repo, number } = input
   const pull = await pullInfo(request, repo, number)
   // The policy comes from the base branch, so a pull request can't loosen its own review.
@@ -188,13 +190,16 @@ export async function runReview(input: { request: Request; repo: string; number:
   }
   const earlier = done.at(-1) ?? null
   const earlierFindings = done.flatMap((review) => review.findings)
-  const { text, complete } = describePull(pull, reviewed, policy.rules ?? [], earlierFindings, conversation)
   const models = input.settings()
-  const answers = Object.fromEntries(
-    await Promise.all(
-      KINDS.filter((kind) => settings[kind]).map(async (kind) => [kind, await ask({ settings: models[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, schema: KindAnswer, name: `tug_${kind}_review` })] as const),
-    ),
-  ) as Partial<Record<Kind, KindAnswer>>
+  // Each pass sees the media the pull request shows; the folder it was read into is gone once both have answered.
+  const passes = (media: Media) => {
+    const { text, complete } = describePull(pull, reviewed, policy.rules ?? [], earlierFindings, conversation, media.lines)
+    return Promise.all(
+      KINDS.filter((kind) => settings[kind]).map(async (kind) => [kind, await ask({ settings: models[kind], system: readFileSync(new URL(`${kind}.md`, input.promptsDir), "utf8"), user: text, images: media.images, schema: KindAnswer, name: `tug_${kind}_review` })] as const),
+    ).then((answers) => ({ answers: Object.fromEntries(answers) as Partial<Record<Kind, KindAnswer>>, complete }))
+  }
+  const refs = input.media ? mediaRefs(pull.body, conversation, reviewed) : []
+  const { answers, complete } = input.media && refs.length > 0 ? await withMedia({ repo, head: pull.head, refs, options: input.media }, passes) : await passes({ images: [], lines: [] })
   const review = combine(pull.head, answers, earlier ? { ...earlier, findings: earlierFindings } : null, complete)
 
   const now = await pullInfo(request, repo, number)
