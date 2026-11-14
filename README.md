@@ -111,6 +111,6 @@ Run `tug status --host <h>`; its `keys` and `model` say what is wrong.
 3. Pull requests from forks are skipped, because they get no secrets or write token.
 4. Your own server skips public repositories, and organizations whose Default runner group allows them.
 5. Reviews and comments come from `github-actions[bot]`.
-6. A review reads at most 10 pieces of media, over https only and up to 50 MB each, and shows the model at most 16 images, a video's frames included. The repository's token goes to GitHub only, never to another host or along a redirect. Where a runner has no ffmpeg, as Tug's own don't, Tug downloads a pinned static build, checked against its SHA-256, and runs it with no environment.
+6. A review reads at most 10 pieces of media, over https only and up to 50 MB each, and shows the model at most 16 images, a video's frames included. The repository's token goes to GitHub only, never to another host or along a redirect. Where a runner has no ffmpeg on PATH, as neither Tug's own nor GitHub's `ubuntu-latest` has, Tug downloads a pinned static build, checked against its SHA-256, and runs it with no environment.
 
 Tug is MIT-licensed.

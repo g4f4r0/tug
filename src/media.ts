@@ -20,8 +20,8 @@ const MAX_IMAGE = 3_500_000
 const MEDIA_FILE = /\.(png|jpe?g|gif|webp|mp4|mov|m4v|webm)$/iu
 
 /**
- * A static ffmpeg for runners that lack one, such as Tug's own, from a pinned release and checked against its SHA-256
- * before it runs. GitHub's runners have ffmpeg on PATH, which is used instead.
+ * A static ffmpeg for runners that lack one, as both Tug's own and GitHub's ubuntu-latest do, from a pinned release and
+ * checked against its SHA-256 before it runs. An ffmpeg on PATH is used instead.
  */
 const FFMPEG: Record<string, { url: string; sha256: string }> = {
   x64: { url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64.gz", sha256: "17c1ae10b52ac499180679fe6ba77e17642390c4eedb0f1e3b0ac045da55128f" },
