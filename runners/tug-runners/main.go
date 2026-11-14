@@ -163,9 +163,15 @@ func refused(err error) bool {
 
 // githubAPI reads one REST API path as the token's user, and returns the response's headers.
 func githubAPI(ctx context.Context, path, token string, into any) (http.Header, error) {
+	return githubDo(ctx, http.MethodGet, path, token, into)
+}
+
+// githubDo sends one REST API request, with no body, as the token's user. It decodes the answer into into, unless into
+// is nil, and returns the response's headers.
+func githubDo(ctx context.Context, method, path, token string, into any) (http.Header, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, apiBase+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +185,10 @@ func githubAPI(ctx context.Context, path, token string, into any) (http.Header, 
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 300))
-		return nil, &apiError{res.StatusCode, fmt.Sprintf("GET %s: %d %s", path, res.StatusCode, strings.TrimSpace(string(body)))}
+		return nil, &apiError{res.StatusCode, fmt.Sprintf("%s %s: %d %s", method, path, res.StatusCode, strings.TrimSpace(string(body)))}
+	}
+	if into == nil {
+		return res.Header, nil
 	}
 	return res.Header, json.NewDecoder(res.Body).Decode(into)
 }
@@ -538,6 +547,10 @@ func (p *pool) listen(ctx context.Context, s *scaler) error {
 		s.mu.Unlock()
 	}()
 	slog.Info("Listening", "scope", sc.url, "scaleSet", set.ID)
+	// Jobs queued before this session, while no listener was told of them, are queued again; see recover.go.
+	sweepCtx, stopSweeping := context.WithCancel(ctx)
+	defer stopSweeping()
+	go s.sweeper(sweepCtx)
 	return l.Run(ctx, s)
 }
 
