@@ -177,8 +177,21 @@ describe("the engine", () => {
     expect(calls.map((call) => call.url)).toEqual(["https://t/?x=1&audience=tug", "http://keys:8787/v1/ask"])
     expect(calls[1]!.init!.headers).toMatchObject({ authorization: "Bearer jwt" })
     expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ pass: "security", system: "s", user: "u", schema: answerSchema, name: "t" })
-    expect(modelSettings({ ...env, TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" }).code).toMatchObject({ provider: "openai", key: "k" })
     expect(() => modelSettings({ TUG_KEYS: "http://keys" })).toThrow("id-token: write")
+  })
+
+  it("never uses a provider key that reached a job on a runner with a key service, and says so", () => {
+    const env = { TUG_KEYS: "http://keys:8787", ACTIONS_ID_TOKEN_REQUEST_URL: "https://t/?x=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "b" }
+    const warnings: string[] = []
+    const settings = modelSettings({ ...env, TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "sk-openai-secret", TUG_ANTHROPIC_API_KEY: "sk-ant-secret" }, fetch, (message) => warnings.push(message))
+    expect(settings.code).toMatchObject({ keys: "http://keys:8787", pass: "code" })
+    expect(settings.security).toMatchObject({ keys: "http://keys:8787", pass: "security" })
+    expect(JSON.stringify(settings)).not.toContain("secret")
+    expect(warnings).toEqual(["TUG_OPENAI_API_KEY and TUG_ANTHROPIC_API_KEY reached this job, on a runner whose key service holds the model keys, so it is not used. Remove it from the secrets and from .github/workflows/tug.yml."])
+    // Without a key service, as on GitHub's runners, the provider key is the one to use, and nothing is said.
+    const quiet: string[] = []
+    expect(modelSettings({ TUG_REVIEW_MODEL: "openai/gpt", TUG_OPENAI_API_KEY: "k" }, fetch, (message) => quiet.push(message)).code).toMatchObject({ provider: "openai", key: "k" })
+    expect(quiet).toEqual([])
   })
 
   it("names the key service and what usually blocks it when no answer comes, not just fetch failed", async () => {

@@ -39,7 +39,8 @@ tug review posts one review of the head (code and security) and its risk:* label
   It prints "skipped: <reason>" and exits 0 when tug.json's review settings leave the pull request out.
 tug merge merges the head when tug.json allows it, or holds it with needs:human. It reads the review from TUG_REVIEW.
 tug init writes .github/workflows/tug.yml (tests and review) in this directory; --merge adds the merge job and tug.json.
-  --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories.
+  --runs-on defaults to ubuntu-latest; never use self-hosted runners for public repositories. On other runners, such
+  as tug, tug.yml passes no secrets, as their key service holds the model keys.
 tug keys serves model calls for GitHub Actions jobs that prove, by OIDC, that they run Tug's own workflows.
   --check instead asks each model one test question with the key service's settings, and prints ok or what failed.
 tug install sets up Tug on a Debian or Ubuntu host over SSH, as the SSH user and never as root: its own rootless Docker,

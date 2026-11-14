@@ -61,11 +61,15 @@ export function providerSettings(env: NodeJS.ProcessEnv = process.env): Record<P
 }
 
 /**
- * The job's settings: the provider settings, or, on a runner that sets `TUG_KEYS` (the URL of a Tug key service) and
- * gives the job no provider key, the key service, called with the job's GitHub OIDC token and naming only the pass.
+ * The job's settings: on a runner that sets `TUG_KEYS` (the URL of a Tug key service), the key service, called with
+ * the job's GitHub OIDC token and naming only the pass; elsewhere, the provider settings. On such a runner a provider
+ * key that reached the job is never used, so a secret passed by mistake can't pick another key or model, and `warn`
+ * names it so that it can be removed.
  */
-export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typeof fetch = fetch): Record<Pass, PassSettings> {
-  if (!env.TUG_KEYS || env.TUG_OPENAI_API_KEY || env.TUG_ANTHROPIC_API_KEY) return providerSettings(env)
+export function modelSettings(env: NodeJS.ProcessEnv = process.env, request: typeof fetch = fetch, warn: (message: string) => void = (message) => console.log(`::warning::${message}`)): Record<Pass, PassSettings> {
+  if (!env.TUG_KEYS) return providerSettings(env)
+  const given = ["TUG_OPENAI_API_KEY", "TUG_ANTHROPIC_API_KEY"].filter((name) => env[name])
+  if (given.length > 0) warn(`${given.join(" and ")} reached this job, on a runner whose key service holds the model keys, so it is not used. Remove it from the secrets and from .github/workflows/tug.yml.`)
   const url = env.ACTIONS_ID_TOKEN_REQUEST_URL
   const bearer = env.ACTIONS_ID_TOKEN_REQUEST_TOKEN
   if (!url || !bearer) throw new Error("TUG_KEYS is set, but the job has no OIDC token: grant it `id-token: write`")

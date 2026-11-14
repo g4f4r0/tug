@@ -2,6 +2,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 const SCRIPTS = ["typecheck", "lint", "test"] as const
+/** Whether a runs-on label names one of GitHub's own runners, such as ubuntu-latest; any other names Tug's own. */
+const githubHosted = (label: string): boolean => /^(ubuntu|windows|macos)-/u.test(label)
+
 /** The model settings review.yml takes. */
 const SECRETS = ["TUG_OPENAI_API_KEY", "TUG_OPENAI_BASE_URL", "TUG_ANTHROPIC_API_KEY", "TUG_ANTHROPIC_BASE_URL", "TUG_REVIEW_MODEL", "TUG_REVIEW_REASONING_EFFORT", "TUG_SECURITY_MODEL", "TUG_SECURITY_REASONING_EFFORT"]
 
@@ -86,9 +89,9 @@ export function init(dir: string, options: InitOptions): InitResult {
     "    uses: g4f4r0/tug/.github/workflows/review.yml@main",
     "    with:",
     `      runs-on: '${runsOn}'`,
-    // Only Tug's own secrets, never all of them. Without them, on runners with a Tug key service, none is needed.
-    "    secrets:",
-    ...SECRETS.map((name) => `      ${name}: \${{ secrets.${name} }}`),
+    // On GitHub's runners, Tug's own secrets, never all of them. On Tug's own runners, none: their key service holds
+    // the model keys, and a secret passed here would reach every job's container.
+    ...(options.runsOn.every(githubHosted) ? ["    secrets:", ...SECRETS.map((name) => `      ${name}: \${{ secrets.${name} }}`)] : []),
     "    permissions:",
     "      contents: read",
     "      pull-requests: write",
