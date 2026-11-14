@@ -55,13 +55,13 @@ describe("finding media", () => {
     ])
   })
 
-  it("reads a changed file the text already links to once, through the link", () => {
+  it("reads a changed file the text links to once, as the file at the head, whatever the branch is called", () => {
     const files = [
       { path: "evidence/flow.mp4", status: "added", additions: 0, deletions: 0 },
       { path: "evidence/after.png", status: "added", additions: 0, deletions: 0 },
     ]
-    expect(mediaRefs("The flow:\nhttps://github.com/o/r/blob/feature/evidence/flow.mp4", [], files)).toEqual([
-      { source: "the body", url: "https://github.com/o/r/blob/feature/evidence/flow.mp4" },
+    expect(mediaRefs("The flow:\nhttps://github.com/o/r/blob/feat/x/evidence/flow.mp4", [], files)).toEqual([
+      { source: "the body", url: "https://github.com/o/r/blob/feat/x/evidence/flow.mp4", path: "evidence/flow.mp4" },
       { source: "the changed file evidence/after.png", path: "evidence/after.png" },
     ])
   })
@@ -105,6 +105,15 @@ describe("reading media", () => {
     expect(calls.filter((c) => c.url.startsWith("https://api.github.com/")).every((c) => c.headers.authorization === "Bearer ghs_secret" && c.headers.accept === "application/vnd.github.raw")).toBe(true)
     expect(calls.every((c) => c.redirect === "manual")).toBe(true)
     expect(media.lines[0]).toBe("media 1: image (PNG, 1 KB) from the body, https://github.com/user-attachments/assets/1111")
+  })
+
+  it("finds the file a repository link names when its branch has a slash, trying each split", async () => {
+    const { call, calls } = fakeFetch((url) => (url === "https://api.github.com/repos/o/other/contents/shots/a.png?ref=feat%2Fx" ? new Response(PNG) : new Response("Not Found", { status: 404 })))
+    const lines: string[] = []
+    const media = await read([{ source: "the body", url: "https://github.com/o/other/blob/feat/x/shots/a.png?raw=true" }], { fetch: call, log: (line) => lines.push(line) })
+    expect(media.images).toHaveLength(1)
+    expect(calls.map((c) => c.url)).toEqual(["https://api.github.com/repos/o/other/contents/x/shots/a.png?ref=feat", "https://api.github.com/repos/o/other/contents/shots/a.png?ref=feat%2Fx"])
+    expect(lines).toEqual(media.lines)
   })
 
   it("names what it couldn't read, and why, and reads nothing over http", async () => {

@@ -49,6 +49,8 @@ export interface MediaOptions {
   fetch?: typeof fetch
   /** ffmpeg to use; found on PATH, else downloaded, when absent. Tests set it. */
   ffmpeg?: string
+  /** Gets each line naming the media, as the model reads it, such as for the job's log. */
+  log?: (line: string) => void
 }
 
 const run = promisify(execFile)
@@ -76,17 +78,23 @@ export function mediaRefs(body: string, comments: PullComment[], files: PullFile
   }
   scan(body, "the body")
   for (const comment of comments) if (!comment.author.endsWith("[bot]")) scan(comment.body, `a comment by ${comment.author}`)
-  // A changed file the text already links to, as github.com/o/r/blob/<ref>/<path>, is read once, through the link.
-  const linked = (path: string) =>
-    refs.some((ref) => {
+  // A link to a changed file, such as github.com/o/r/blob/<branch>/<path>, is read once, as the file at the head: a
+  // branch with a slash in its name makes such a link ambiguous, and the head is what the review reviews.
+  const linking = (path: string) =>
+    refs.find((ref) => {
       try {
-        return ref.url !== undefined && decodeURIComponent(new URL(ref.url).pathname).endsWith(`/${path}`)
+        return ref.url !== undefined && ref.path === undefined && decodeURIComponent(new URL(ref.url).pathname).endsWith(`/${path}`)
       } catch {
         // A malformed link links to nothing.
         return false
       }
     })
-  for (const file of files) if (file.status !== "removed" && MEDIA_FILE.test(file.path) && !linked(file.path)) add({ source: `the changed file ${file.path}`, path: file.path })
+  for (const file of files) {
+    if (file.status === "removed" || !MEDIA_FILE.test(file.path)) continue
+    const link = linking(file.path)
+    if (link) link.path = file.path
+    else add({ source: `the changed file ${file.path}`, path: file.path })
+  }
   return refs
 }
 
@@ -160,9 +168,23 @@ async function download(ref: MediaRef, repo: string, head: string, options: Medi
   const url = new URL(ref.url!)
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
   if (url.protocol !== "https:") throw new MediaError("it is not served over https")
+  // <ref>/<path> in a repository URL is ambiguous when the ref has a slash, as feat/x does: each split is tried, the
+  // shortest ref first, until one is a file.
+  const inRepo = async (owner: string, name: string, rest: string[]): Promise<Buffer> => {
+    let last: unknown
+    for (let cut = 1; cut < rest.length && cut <= 5; cut++) {
+      try {
+        return await get(contentsUrl(api, `${owner}/${name}`, rest.slice(cut).join("/"), rest.slice(0, cut).join("/")), raw)
+      } catch (error) {
+        last = error
+        if (!(error instanceof MediaError) || error.message !== "it answered 404") throw error
+      }
+    }
+    throw last ?? new MediaError("it names no file")
+  }
   // github.com/<owner>/<repo>/blob|raw/<ref>/<path>, and raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>.
-  if (url.hostname === "github.com" && parts.length >= 5 && (parts[2] === "blob" || parts[2] === "raw")) return get(contentsUrl(api, `${parts[0]}/${parts[1]}`, parts.slice(4).join("/"), parts[3]!), raw)
-  if (url.hostname === "raw.githubusercontent.com" && parts.length >= 4) return get(contentsUrl(api, `${parts[0]}/${parts[1]}`, parts.slice(3).join("/"), parts[2]!), raw)
+  if (url.hostname === "github.com" && parts.length >= 5 && (parts[2] === "blob" || parts[2] === "raw")) return inRepo(parts[0]!, parts[1]!, parts.slice(3))
+  if (url.hostname === "raw.githubusercontent.com" && parts.length >= 4) return inRepo(parts[0]!, parts[1]!, parts.slice(2))
   if (url.hostname === "github.com" && parts[0] === "user-attachments") return get(url.href, authorized)
   return get(url.href, { "user-agent": "tug" })
 }
@@ -279,6 +301,7 @@ export async function withMedia<T>(input: { repo: string; head: string; refs: Me
       }
     }
     if (input.refs.length > MAX_MEDIA) lines.push(`${input.refs.length - MAX_MEDIA} more media left out: the review reads at most ${MAX_MEDIA}.`)
+    for (const line of lines) input.options.log?.(line)
     return await use({ images, lines })
   } finally {
     await rm(dir, { recursive: true, force: true })
